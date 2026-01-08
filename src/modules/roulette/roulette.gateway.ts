@@ -3,6 +3,7 @@ import {
   WebSocketServer,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   SubscribeMessage,
   ConnectedSocket,
 } from '@nestjs/websockets';
@@ -22,7 +23,7 @@ import { RouletteService } from './roulette.service';
   },
 })
 export class RouletteGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
+  implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
 {
   @WebSocketServer()
   server!: Server;
@@ -33,9 +34,28 @@ export class RouletteGateway
     private readonly rouletteService: RouletteService,
   ) {}
 
-  afterInit(server: Server): void {
+  async afterInit(server: Server): Promise<void> {
     const pubClient = this.redisService.getPublisher();
     const subClient = this.redisService.getSubscriber();
+
+    // Wait for Redis clients to be ready before initializing adapter
+    await Promise.all([
+      new Promise<void>((resolve) => {
+        if (pubClient.status === 'ready') {
+          resolve();
+        } else {
+          pubClient.once('ready', () => resolve());
+        }
+      }),
+      new Promise<void>((resolve) => {
+        if (subClient.status === 'ready') {
+          resolve();
+        } else {
+          subClient.once('ready', () => resolve());
+        }
+      }),
+    ]);
+
     server.adapter(createAdapter(pubClient, subClient));
   }
 
