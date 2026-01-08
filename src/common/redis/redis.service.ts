@@ -28,7 +28,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private publisher: Redis;
   private readonly ttl = 1000 * 60 * 60 * 2; // 2 hours
 
-  onModuleInit(): void {
+  async onModuleInit(): Promise<void> {
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
     this.client = new Redis(redisUrl, {
       retryStrategy: (times) => {
@@ -48,6 +48,31 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         return delay;
       },
     });
+
+    // Wait for all Redis clients to be ready
+    await Promise.all([
+      new Promise<void>((resolve) => {
+        if (this.client.status === 'ready') {
+          resolve();
+        } else {
+          this.client.once('ready', () => resolve());
+        }
+      }),
+      new Promise<void>((resolve) => {
+        if (this.subscriber.status === 'ready') {
+          resolve();
+        } else {
+          this.subscriber.once('ready', () => resolve());
+        }
+      }),
+      new Promise<void>((resolve) => {
+        if (this.publisher.status === 'ready') {
+          resolve();
+        } else {
+          this.publisher.once('ready', () => resolve());
+        }
+      }),
+    ]);
   }
 
   async onModuleDestroy(): Promise<void> {
