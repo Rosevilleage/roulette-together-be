@@ -9,6 +9,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
+import type Redis from 'ioredis';
 import type { RoomJoinDto } from './dto/room-join.dto';
 import type { RoomConfigSetDto } from './dto/room-config-set.dto';
 import type { SpinRequestDto } from './dto/spin-request.dto';
@@ -35,10 +36,30 @@ export class RouletteGateway
   ) {}
 
   async afterInit(server: Server): Promise<void> {
-    const pubClient = this.redisService.getPublisher();
-    const subClient = this.redisService.getSubscriber();
+    // Wait for Redis clients to be initialized
+    const maxRetries = 50;
+    let pubClient: Redis | undefined;
+    let subClient: Redis | undefined;
 
-    // Wait for Redis clients to be ready before initializing adapter
+    for (let i = 0; i < maxRetries; i++) {
+      pubClient = this.redisService.getPublisher();
+      subClient = this.redisService.getSubscriber();
+
+      if (pubClient && subClient) {
+        break;
+      }
+
+      // Wait 100ms before retrying
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    if (!pubClient || !subClient) {
+      throw new Error(
+        'Redis clients not initialized after waiting. Please check Redis connection.',
+      );
+    }
+
+    // Wait for Redis clients to be ready
     await Promise.all([
       new Promise<void>((resolve) => {
         if (pubClient.status === 'ready') {
