@@ -22,6 +22,6 @@ async function bootstrap(): Promise<void> {
     origin: process.env.CORS_ORIGIN || '*',
     credentials: true,
   });
-  await app.listen(process.env.PORT ?? 3000);
+  await app.listen(process.env.PORT ?? 8080);
 }
 bootstrap();
