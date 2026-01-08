@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
-import { RedisService } from '../redis/redis.service';
+
 import { SessionService } from '../session/session.service';
 import { RoomJoinDto } from './dto/room-join.dto';
 import { RoomConfigSetDto } from './dto/room-config-set.dto';
 import { SpinRequestDto } from './dto/spin-request.dto';
 import { randomBytes } from 'crypto';
+import { RedisService } from 'src/common/redis/redis.service';
 
 interface SocketWithRid extends Socket {
   data: {

@@ -39,7 +39,7 @@ export class SessionService {
   }
 
   getRidFromCookie(req: Request): string | null {
-    return req.cookies?.rid as unknown as string | null;
+    return (req.cookies?.rid as string) ?? null;
   }
 
   setRidCookie(res: Response, rid: string): void {

@@ -92,9 +92,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     const result = await this.client.set(
       `room:owner:${roomId}`,
       rid,
-      'NX',
       'EX',
       Math.floor(this.ttl / 1000),
+      'NX',
     );
     return result === 'OK';
   }
@@ -140,9 +140,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     const result = await this.client.set(
       `lock:spin:${roomId}`,
       spinId,
-      'NX',
       'PX',
       ttlMs,
+      'NX',
     );
     return result === 'OK';
   }

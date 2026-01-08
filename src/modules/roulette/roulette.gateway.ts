@@ -8,12 +8,12 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
-import { SessionService } from '../session/session.service';
-import { RedisService } from '../redis/redis.service';
-import { RouletteService } from './roulette.service';
 import type { RoomJoinDto } from './dto/room-join.dto';
 import type { RoomConfigSetDto } from './dto/room-config-set.dto';
 import type { SpinRequestDto } from './dto/spin-request.dto';
+import { SessionService } from '../session/session.service';
+import { RedisService } from '../../common/redis/redis.service';
+import { RouletteService } from './roulette.service';
 
 @WebSocketGateway({
   cors: {
@@ -39,10 +39,18 @@ export class RouletteGateway
     server.adapter(createAdapter(pubClient, subClient));
   }
 
+  private isValidRid(rid: string | undefined): rid is string {
+    return (
+      typeof rid === 'string' &&
+      rid.length > 0 &&
+      this.sessionService.verifyRid(rid)
+    );
+  }
+
   handleConnection(socket: Socket): void {
     // Extract rid from cookie
     const cookies = socket.handshake.headers.cookie;
-    if (!cookies) {
+    if (!cookies || typeof cookies !== 'string') {
       socket.disconnect();
       return;
     }
@@ -57,7 +65,7 @@ export class RouletteGateway
     });
 
     const rid = cookieMap.get('rid');
-    if (!rid || !this.sessionService.verifyRid(rid)) {
+    if (!this.isValidRid(rid)) {
       socket.disconnect();
       return;
     }
