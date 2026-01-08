@@ -1,10 +1,12 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
+import { setupSwagger } from './utils/swagger';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
   app.use(cookieParser());
+  setupSwagger(app);
   app.enableCors({
     origin: process.env.CORS_ORIGIN || '*',
     credentials: true,

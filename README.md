@@ -97,6 +97,21 @@ pnpm run start:prod
 
 ## 📡 API 명세
 
+### Swagger API 문서
+
+애플리케이션 실행 후 다음 URL에서 대화형 API 문서를 확인할 수 있습니다:
+
+**Swagger UI**: `http://localhost:3000/api`
+
+Swagger UI에서 다음을 할 수 있습니다:
+
+- 모든 REST API 엔드포인트 확인
+- API 요청/응답 스키마 확인
+- 직접 API 테스트 실행
+- 쿠키 인증 테스트
+
+> **참고**: WebSocket 이벤트는 Swagger에서 문서화되지 않습니다. WebSocket API는 아래 섹션을 참고하세요.
+
 ### REST API
 
 #### 세션 생성
