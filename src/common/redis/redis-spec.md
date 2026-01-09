@@ -188,9 +188,11 @@ SMEMBERS room:members:{roomId}
 **저장 데이터**:
 ```typescript
 {
-  roomId: string;   // 참가 중인 방 ID
-  rid: string;      // 사용자 세션 ID
-  lastSeen: number; // 마지막 활동 시각 (Unix ms)
+  roomId: string;                  // 참가 중인 방 ID
+  rid: string;                     // 유저 ID (방 내에서만 유효)
+  nickname: string;                // 닉네임
+  role: 'owner' | 'participant';   // 역할
+  lastSeen: number;                // 마지막 활동 시각 (Unix ms)
 }
 ```
 
@@ -308,6 +310,62 @@ SET idem:spin:{roomId}:{requestId} {spinId} EX 30
 
 ---
 
+#### 방 토큰 관리
+
+##### `setRoomOwnerToken(roomId: string, token: string): Promise<void>`
+**기능**: 방장 인증 토큰 저장
+
+**Redis 명령**:
+```
+SET room:owner:token:{roomId} {token} EX 7200
+```
+
+**Redis 키**: `room:owner:token:{roomId}`
+
+**TTL**: 2시간
+
+**용도**: HTTP API로 방 생성 시 발급된 토큰 저장
+
+---
+
+##### `verifyRoomOwnerToken(roomId: string, token: string): Promise<boolean>`
+**기능**: 방장 토큰 검증
+
+**반환**:
+- `true`: 토큰 일치
+- `false`: 토큰 불일치 또는 없음
+
+**용도**: 프론트엔드에서 방장 권한 확인용 (선택적 사용)
+
+---
+
+#### 참가자 카운터 관리
+
+##### `getNextParticipantNumber(roomId: string): Promise<number>`
+**기능**: 다음 참가자 번호 조회 및 증가
+
+**Redis 명령**:
+```
+INCR room:participant:counter:{roomId}
+EXPIRE room:participant:counter:{roomId} 7200
+```
+
+**반환**: 증가된 카운터 값 (1부터 시작)
+
+**Redis 키**: `room:participant:counter:{roomId}`
+
+**TTL**: 2시간
+
+**용도**: 닉네임이 없는 참가자에게 "참가자 N" 자동 생성
+
+**예시**:
+```typescript
+const num = await getNextParticipantNumber('room-123'); // 1
+const nickname = `참가자 ${num}`; // "참가자 1"
+```
+
+---
+
 ## 데이터 타입
 
 ### RoomConfig
@@ -333,9 +391,11 @@ interface RoomState {
 ### SocketInfo
 ```typescript
 interface SocketInfo {
-  roomId: string;   // 참가 중인 방
-  rid: string;      // 세션 ID
-  lastSeen: number; // 마지막 활동
+  roomId: string;                  // 참가 중인 방
+  rid: string;                     // 유저 ID (방 내에서만 유효)
+  nickname: string;                // 닉네임
+  role: 'owner' | 'participant';   // 역할
+  lastSeen: number;                // 마지막 활동
 }
 ```
 
@@ -347,8 +407,10 @@ interface SocketInfo {
 |---------|------|------|-----|
 | `room:config:{roomId}` | String (JSON) | 방 설정 | 2시간 |
 | `room:owner:{roomId}` | String | 방장 rid | 2시간 |
+| `room:owner:token:{roomId}` | String | 방장 인증 토큰 | 2시간 |
+| `room:participant:counter:{roomId}` | Number | 참가자 번호 카운터 | 2시간 |
 | `room:members:{roomId}` | Set | 방 멤버 소켓 ID 목록 | 없음* |
-| `room:socket:{socketId}` | String (JSON) | 소켓 정보 | 2시간 |
+| `room:socket:{socketId}` | String (JSON) | 소켓 정보 (nickname, role 포함) | 2시간 |
 | `room:state:{roomId}` | String (JSON) | 방 상태 | 2시간 |
 | `lock:spin:{roomId}` | String | 스핀 분산 락 | 10초 |
 | `idem:spin:{roomId}:{requestId}` | String | 멱등성 키 | 30초 |
@@ -468,6 +530,43 @@ redis://:password123@redis.example.com:6380/0
 - 연결/재연결 이벤트
 - 락 획득/해제
 - 명령 실패
+
+---
+
+## 주요 변경사항 (v2.0)
+
+### ✅ 추가된 기능
+
+- [x] 방장 토큰 관리 (`setRoomOwnerToken`, `verifyRoomOwnerToken`)
+- [x] 참가자 카운터 (`getNextParticipantNumber`)
+- [x] SocketInfo에 nickname, role 필드 추가
+
+### 변경된 데이터 구조
+
+**SocketInfo (이전)**:
+```typescript
+{
+  roomId: string;
+  rid: string;
+  lastSeen: number;
+}
+```
+
+**SocketInfo (현재)**:
+```typescript
+{
+  roomId: string;
+  rid: string;
+  nickname: string;
+  role: 'owner' | 'participant';
+  lastSeen: number;
+}
+```
+
+### rid 역할 변경
+
+- **이전**: 쿠키 기반 세션 ID (전역 유저 식별)
+- **현재**: WebSocket 연결 시 생성되는 임의 ID (방 내에서만 유저 구분)
 
 ---
 

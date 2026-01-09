@@ -9,11 +9,11 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
+import { randomBytes } from 'crypto';
 import type Redis from 'ioredis';
 import type { RoomJoinDto } from './dto/room-join.dto';
 import type { RoomConfigSetDto } from './dto/room-config-set.dto';
 import type { SpinRequestDto } from './dto/spin-request.dto';
-import { SessionService } from '../session/session.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { RouletteService } from './roulette.service';
 
@@ -30,7 +30,6 @@ export class RouletteGateway
   server!: Server;
 
   constructor(
-    private readonly sessionService: SessionService,
     private readonly redisService: RedisService,
     private readonly rouletteService: RouletteService,
   ) {}
@@ -80,37 +79,11 @@ export class RouletteGateway
     server.adapter(createAdapter(pubClient, subClient));
   }
 
-  private isValidRid(rid: string | undefined): rid is string {
-    return (
-      typeof rid === 'string' &&
-      rid.length > 0 &&
-      this.sessionService.verifyRid(rid)
-    );
-  }
-
   handleConnection(socket: Socket): void {
-    // Extract rid from cookie
-    const cookies = socket.handshake.headers.cookie;
-    if (!cookies || typeof cookies !== 'string') {
-      socket.disconnect();
-      return;
-    }
+    // Generate a unique rid for this connection (방 내에서만 유저를 구분하는 용도)
+    const rid = randomBytes(16).toString('hex');
 
-    // Parse cookies (handle URL encoding)
-    const cookieMap = new Map<string, string>();
-    cookies.split(';').forEach((cookie) => {
-      const [key, value] = cookie.trim().split('=');
-      if (key && value) {
-        cookieMap.set(key, decodeURIComponent(value));
-      }
-    });
-
-    const rid = cookieMap.get('rid');
-    if (!this.isValidRid(rid)) {
-      socket.disconnect();
-      return;
-    }
-
+    // Store rid in socket data
     (socket as unknown as { data: { rid?: string } }).data.rid = rid;
   }
 

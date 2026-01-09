@@ -18,6 +18,8 @@ export interface RoomState {
 export interface SocketInfo {
   roomId: string;
   rid: string;
+  nickname: string;
+  role: 'owner' | 'participant';
   lastSeen: number;
 }
 
@@ -212,5 +214,30 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       'EX',
       Math.floor(this.ttl / 1000),
     );
+  }
+
+  // Room tokens (owner verification)
+  async setRoomOwnerToken(roomId: string, token: string): Promise<void> {
+    await this.client.set(
+      `room:owner:token:${roomId}`,
+      token,
+      'EX',
+      Math.floor(this.ttl / 1000),
+    );
+  }
+
+  async verifyRoomOwnerToken(roomId: string, token: string): Promise<boolean> {
+    const storedToken = await this.client.get(`room:owner:token:${roomId}`);
+    return storedToken === token;
+  }
+
+  // Room participant counter for auto-nickname
+  async getNextParticipantNumber(roomId: string): Promise<number> {
+    const count = await this.client.incr(`room:participant:counter:${roomId}`);
+    await this.client.expire(
+      `room:participant:counter:${roomId}`,
+      Math.floor(this.ttl / 1000),
+    );
+    return count;
   }
 }

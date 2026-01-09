@@ -9,9 +9,10 @@ Rullette Together는 여러 사용자가 함께 참여할 수 있는 실시간 �
 ### 주요 기능
 
 - 🎯 **실시간 룰렛 게임**: Socket.IO를 통한 실시간 양방향 통신
-- 🏠 **방 기반 시스템**: 독립적인 게임 방 생성 및 관리
+- 🏠 **방 기반 시스템**: HTTP API로 방 생성, WebSocket으로 실시간 참여
 - 👥 **멀티플레이 지원**: Redis Pub/Sub을 활용한 다중 서버 환경 지원
-- 🔐 **세션 관리**: HMAC 기반 안전한 사용자 세션 관리
+- 👤 **닉네임 관리**: 자동 생성 또는 커스텀 닉네임 지원
+- 🔐 **권한 관리**: Role 기반 (방장/참가자) 권한 제어
 - ⚡ **분산 락**: Redis를 통한 동시성 제어 및 중복 요청 방지
 - 🎲 **커스터마이징**: 승자 수, 승리/패배 감정 설정 가능
 
@@ -54,8 +55,8 @@ CORS_ORIGIN=http://localhost:5173
 # Redis 설정
 REDIS_URL=redis://localhost:6379
 
-# 세션 설정 (프로덕션에서는 반드시 변경하세요)
-SESSION_SECRET=your-secret-key-change-in-production
+# 프론트엔드 URL (방 생성 시 사용)
+FRONTEND_URL=http://localhost:3000
 ```
 
 ### Redis 실행
@@ -114,15 +115,26 @@ Swagger UI에서 다음을 할 수 있습니다:
 
 ### REST API
 
-#### 세션 생성
+#### 방 생성
 
 ```http
-GET /session
+POST /rooms
 ```
 
 응답:
 
-- `rid` 쿠키 설정 (HMAC 서명된 세션 ID)
+```json
+{
+  "roomId": "room-abc123def456",
+  "ownerToken": "token-xyz...",
+  "ownerUrl": "http://localhost:3000/room/room-abc123def456?role=owner&token=token-xyz...",
+  "participantUrl": "http://localhost:3000/room/room-abc123def456?role=participant",
+  "createdAt": 1704729600000
+}
+```
+
+- `ownerUrl`: 방장용 입장 링크 (토큰 포함)
+- `participantUrl`: 참가자용 입장 링크 (공유용)
 
 ### WebSocket Events
 
@@ -130,8 +142,8 @@ GET /session
 
 #### 인증
 
-- 쿠키에 `rid` 값 필요
-- 연결 시 자동으로 세션 검증
+- 연결 시 자동으로 rid 생성 (방 내에서만 유효한 유저 ID)
+- 쿠키 인증 불필요
 
 #### 이벤트
 
@@ -141,7 +153,24 @@ GET /session
 // Client -> Server
 socket.emit('room:join', {
   roomId: string,
-  nickname?: string
+  role: 'owner' | 'participant',  // 역할
+  nickname?: string               // 선택 (없으면 "참가자 N" 자동 생성)
+});
+
+// Server -> Client (성공)
+socket.on('room:joined', (data) => {
+  roomId: string,
+  serverTime: number,
+  you: {
+    isOwner: boolean,
+    nickname: string,
+    rid: string
+  }
+});
+
+// Server -> Client (실패)
+socket.on('room:join:rejected', (data) => {
+  reason: 'INVALID_REQUEST' | 'INVALID_RID' | 'OWNER_ALREADY_EXISTS'
 });
 ```
 
@@ -151,32 +180,58 @@ socket.emit('room:join', {
 // Client -> Server
 socket.emit('room:config:set', {
   roomId: string,
-  winnersCount: number, // 승자 수
-  winSentiment: 'POSITIVE' | 'NEGATIVE', // 승리 감정 (긍정/부정)
+  winnersCount: number,              // 승자 수
+  winSentiment: 'POSITIVE' | 'NEGATIVE', // 승리 감정
 });
 
 // Server -> All Clients in Room
-socket.on('room:config:updated', (config) => {
-  // 변경된 설정 수신
+socket.on('room:config', (config) => {
+  roomId: string,
+  winnersCount: number,
+  winSentiment: 'POSITIVE' | 'NEGATIVE',
+  updatedAt: number
 });
 ```
 
-##### 3. 룰렛 스핀 요청
+##### 3. 룰렛 스핀 요청 (방장만 가능)
 
 ```typescript
 // Client -> Server
 socket.emit('spin:request', {
   roomId: string,
-  requestId: string  // 중복 요청 방지용 고유 ID
+  requestId: string  // 중복 요청 방지용 고유 ID (UUID 권장)
 });
 
 // Server -> All Clients in Room
-socket.on('spin:result', (result) => {
+socket.on('spin:resolved', (data) => {
+  roomId: string,
+  requestId: string,
   spinId: string,
-  winners: string[],      // 승자 목록
-  losers: string[],       // 패자 목록
-  decidedAt: number,      // 결정 시각 (타임스탬프)
-  resultSummary?: string  // 결과 요약
+  winnersCount: number,
+  winSentiment: 'POSITIVE' | 'NEGATIVE',
+  decidedAt: number,
+  animation: {
+    revealAt: number,    // 결과 공개 시각
+    durationMs: number   // 애니메이션 길이
+  }
+});
+
+// Server -> Each Client (개별 결과)
+socket.on('spin:outcome', (data) => {
+  roomId: string,
+  spinId: string,
+  outcome: 'WIN' | 'LOSE',
+  winSentiment: 'POSITIVE' | 'NEGATIVE'
+});
+
+// Server -> All Clients in Room (전체 결과, 닉네임 포함)
+socket.on('spin:result', (data) => {
+  roomId: string,
+  spinId: string,
+  outcomes: [
+    { nickname: string, outcome: 'WIN' | 'LOSE' },
+    ...
+  ]
 });
 ```
 
@@ -189,17 +244,17 @@ src/
 ├── common/                # 공통 모듈
 │   └── redis/            # Redis 서비스
 │       ├── redis.module.ts
-│       └── redis.service.ts
+│       ├── redis.service.ts
+│       └── redis-spec.md          # Redis 명세
 └── modules/              # 기능 모듈
-    ├── session/         # 세션 관리
-    │   ├── session.controller.ts
-    │   ├── session.service.ts
-    │   └── session.module.ts
     └── roulette/        # 룰렛 게임
+        ├── roulette.controller.ts # HTTP API (방 생성)
         ├── roulette.gateway.ts    # WebSocket 게이트웨이
         ├── roulette.service.ts    # 비즈니스 로직
         ├── roulette.module.ts
+        ├── roulette-spec.md       # 룰렛 명세
         └── dto/                   # 데이터 전송 객체
+            ├── create-room-response.dto.ts
             ├── room-join.dto.ts
             ├── room-config-set.dto.ts
             └── spin-request.dto.ts
@@ -237,10 +292,10 @@ pnpm run test:cov
 
 ## 🔒 보안 고려사항
 
-- **세션 보안**: HMAC-SHA256을 사용한 세션 ID 서명 및 검증
-- **프로덕션 설정**: `SESSION_SECRET` 환경 변수를 반드시 안전한 값으로 변경
+- **방장 인증**: 토큰 기반 방장 권한 검증
 - **CORS 설정**: 프로덕션에서는 `CORS_ORIGIN`을 특정 도메인으로 제한
-- **쿠키 보안**: 프로덕션 환경에서 `httpOnly`, `secure`, `sameSite` 속성 활성화
+- **토큰 관리**: 방장 토큰은 URL 쿼리 파라미터로 전달 (프론트엔드에서 관리)
+- **rid 관리**: WebSocket 연결마다 고유 rid 생성 (방 내에서만 유효)
 
 ## 🐳 Docker
 
@@ -296,6 +351,14 @@ docker compose ps
 4. **프로세스 관리**
    - PM2 또는 Docker를 사용한 프로세스 관리 권장
    - 무중단 배포를 위한 로드 밸런서 구성
+
+## 📚 문서
+
+프로젝트의 상세한 명세는 다음 문서를 참고하세요:
+
+- [Roulette 모듈 명세](src/modules/roulette/roulette-spec.md) - 룰렛 게임 로직 및 API 명세
+- [Redis 모듈 명세](src/common/redis/redis-spec.md) - Redis 데이터 구조 및 메서드
+- [프론트엔드 개발 계획](front-dev-plan.md) - 프론트엔드 개발 가이드
 
 ## 🤝 기여하기
 

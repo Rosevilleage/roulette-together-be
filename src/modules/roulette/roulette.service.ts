@@ -1,43 +1,83 @@
 import { Injectable } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
-
-import { SessionService } from '../session/session.service';
+import { randomBytes } from 'crypto';
 import { RoomJoinDto } from './dto/room-join.dto';
 import { RoomConfigSetDto } from './dto/room-config-set.dto';
 import { SpinRequestDto } from './dto/spin-request.dto';
-import { randomBytes } from 'crypto';
 import { RedisService } from 'src/common/redis/redis.service';
 
-interface SocketWithRid extends Socket {
+interface SocketWithData extends Socket {
   data: {
     rid?: string;
+    nickname?: string;
+    role?: 'owner' | 'participant';
   };
 }
 
 @Injectable()
 export class RouletteService {
-  constructor(
-    private readonly redisService: RedisService,
-    private readonly sessionService: SessionService,
-  ) {}
+  constructor(private readonly redisService: RedisService) {}
 
   private getRid(socket: Socket): string | null {
-    const rid = (socket as SocketWithRid).data.rid;
+    const rid = (socket as SocketWithData).data.rid;
     return typeof rid === 'string' ? rid : null;
   }
 
+  private getNickname(socket: Socket): string | null {
+    const nickname = (socket as SocketWithData).data.nickname;
+    return typeof nickname === 'string' ? nickname : null;
+  }
+
+  private getRole(socket: Socket): 'owner' | 'participant' | null {
+    const role = (socket as SocketWithData).data.role;
+    return role === 'owner' || role === 'participant' ? role : null;
+  }
+
   async handleRoomJoin(socket: Socket, data: RoomJoinDto): Promise<void> {
-    if (!data?.roomId) {
-      socket.disconnect();
+    if (!data?.roomId || !data?.role) {
+      socket.emit('room:join:rejected', {
+        reason: 'INVALID_REQUEST',
+      });
       return;
     }
 
-    const { roomId } = data;
+    const { roomId, role } = data;
     const rid = this.getRid(socket);
 
     if (!rid) {
-      socket.disconnect();
+      socket.emit('room:join:rejected', {
+        reason: 'INVALID_RID',
+      });
       return;
+    }
+
+    // Determine nickname
+    let nickname = data.nickname?.trim();
+    if (!nickname) {
+      // Generate auto nickname
+      const participantNumber =
+        await this.redisService.getNextParticipantNumber(roomId);
+      nickname = `참가자 ${participantNumber}`;
+    }
+
+    // Verify owner token if role is owner
+    if (role === 'owner') {
+      // For owner role, we need a token from query params
+      // This should be validated in gateway before joining
+      const ownerRid = await this.redisService.getRoomOwner(roomId);
+
+      // If room already has owner and this rid is not the owner, reject
+      if (ownerRid && ownerRid !== rid) {
+        socket.emit('room:join:rejected', {
+          reason: 'OWNER_ALREADY_EXISTS',
+        });
+        return;
+      }
+
+      // Set as owner if not already set
+      if (!ownerRid) {
+        await this.redisService.setRoomOwner(roomId, rid);
+      }
     }
 
     // Join socket room
@@ -46,15 +86,18 @@ export class RouletteService {
     // Add to Redis members set
     await this.redisService.addRoomMember(roomId, socket.id);
 
-    // Store socket info
+    // Store socket info with nickname and role
     await this.redisService.setSocketInfo(socket.id, {
       roomId,
       rid,
+      nickname,
+      role: role as 'owner' | 'participant',
       lastSeen: Date.now(),
     });
 
-    // Try to become owner (only first one succeeds)
-    const isOwner = await this.redisService.setRoomOwner(roomId, rid);
+    // Check if user is owner
+    const ownerRid = await this.redisService.getRoomOwner(roomId);
+    const isOwner = ownerRid === rid;
 
     // Ensure default config exists
     let config = await this.redisService.getRoomConfig(roomId);
@@ -71,7 +114,11 @@ export class RouletteService {
     socket.emit('room:joined', {
       roomId,
       serverTime: Date.now(),
-      you: { isOwner },
+      you: {
+        isOwner,
+        nickname,
+        rid,
+      },
     });
 
     // Send room:config
@@ -83,7 +130,6 @@ export class RouletteService {
     // Send room:state (optional)
     const state = await this.redisService.getRoomState(roomId);
     if (state) {
-      const ownerRid = await this.redisService.getRoomOwner(roomId);
       socket.emit('room:state', {
         roomId,
         ownerRid: ownerRid || '',
@@ -251,9 +297,24 @@ export class RouletteService {
         },
       });
 
-      // Send individual outcomes
+      // Send individual outcomes with nickname
+      const outcomes: Array<{
+        socketId: string;
+        nickname: string;
+        outcome: 'WIN' | 'LOSE';
+      }> = [];
+
       for (const socketId of activeSocketIds) {
         const isWinner = winnerSet.has(socketId);
+        const socketInfo = await this.redisService.getSocketInfo(socketId);
+        const nickname = socketInfo?.nickname || '알 수 없음';
+
+        outcomes.push({
+          socketId,
+          nickname,
+          outcome: isWinner ? 'WIN' : 'LOSE',
+        });
+
         const socketInstance = server.sockets.sockets.get(socketId);
         if (socketInstance) {
           socketInstance.emit('spin:outcome', {
@@ -264,6 +325,16 @@ export class RouletteService {
           });
         }
       }
+
+      // Broadcast result summary to all (with nicknames)
+      server.to(roomId).emit('spin:result', {
+        roomId,
+        spinId,
+        outcomes: outcomes.map((o) => ({
+          nickname: o.nickname,
+          outcome: o.outcome,
+        })),
+      });
 
       // Update room state
       await this.redisService.setRoomState(roomId, {

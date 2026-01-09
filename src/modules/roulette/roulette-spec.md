@@ -2,7 +2,7 @@
 
 ## 개요
 
-룰렛 게임의 핵심 기능을 제공하는 WebSocket 기반 실시간 멀티플레이어 모듈입니다.
+룰렛 게임의 핵심 기능을 제공하는 HTTP API 및 WebSocket 기반 실시간 멀티플레이어 모듈입니다.
 방(Room) 생성, 참가, 설정, 룰렛 회전 및 결과 처리를 담당합니다.
 
 ## 모듈 구조
@@ -11,25 +11,61 @@
 
 ```
 roulette/
-├── roulette.module.ts       # 모듈 정의
-├── roulette.gateway.ts      # WebSocket 게이트웨이
-├── roulette.service.ts      # 비즈니스 로직
+├── roulette.module.ts             # 모듈 정의
+├── roulette.controller.ts         # HTTP API 컨트롤러 (방 생성)
+├── roulette.gateway.ts            # WebSocket 게이트웨이
+├── roulette.service.ts            # 비즈니스 로직
 └── dto/
-    ├── room-join.dto.ts           # 방 입장 요청
-    ├── room-config-set.dto.ts     # 방 설정 변경 요청
-    └── spin-request.dto.ts        # 룰렛 회전 요청
+    ├── create-room-response.dto.ts    # 방 생성 응답
+    ├── room-join.dto.ts               # 방 입장 요청
+    ├── room-config-set.dto.ts         # 방 설정 변경 요청
+    └── spin-request.dto.ts            # 룰렛 회전 요청
 ```
 
 ### 의존성
 
-- **SessionModule**: 세션(rid) 검증
 - **RedisModule**: 분산 상태 관리 및 pub/sub
 
 ---
 
 ## 주요 컴포넌트
 
-### 1. RouletteGateway
+### 1. RouletteController
+
+HTTP API를 통한 방 생성을 담당하는 컨트롤러입니다.
+
+#### 엔드포인트
+
+##### `POST /rooms`
+
+**기능**: 새로운 룰렛 방 생성
+
+**요청 Body**:
+**요청 Body**: 없음 (빈 POST 요청)
+
+**응답**:
+
+```json
+{
+  "roomId": "room-abc123def456",
+  "ownerToken": "token-xyz...",
+  "ownerUrl": "http://localhost:3000/room/room-abc123def456?role=owner&token=token-xyz...",
+  "participantUrl": "http://localhost:3000/room/room-abc123def456?role=participant",
+  "createdAt": 1704729600000
+}
+```
+
+**처리 흐름**:
+
+1. 고유한 roomId 생성 (16자 hex)
+2. 방장 인증용 ownerToken 생성 (64자 hex)
+3. Redis에 토큰 저장 (2시간 TTL)
+4. 기본 방 설정 초기화
+5. 방장/참가자 URL 생성 및 반환
+
+---
+
+### 2. RouletteGateway
 
 WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
@@ -37,12 +73,12 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 - **CORS 설정**: 환경변수 `CORS_ORIGIN` 또는 전체 허용
 - **Redis Adapter**: Socket.io의 멀티 인스턴스 지원을 위한 Redis 어댑터 설정
-- **인증**: 쿠키의 `rid` 검증 (SessionService 활용)
+- **rid 생성**: 연결 시 자동으로 고유한 rid 생성 (방 내 유저 구분 용도)
 
 #### 라이프사이클 훅
 
 - `afterInit()`: Redis pub/sub 클라이언트 초기화 및 어댑터 설정 (최대 50회 재시도, 100ms 간격)
-- `handleConnection()`: 연결 시 쿠키에서 `rid` 추출 및 검증, 실패 시 연결 종료
+- `handleConnection()`: 연결 시 임의의 rid 생성 및 소켓 데이터에 저장
 - `handleDisconnect()`: 연결 종료 시 방 멤버 제거 및 소켓 정보 삭제
 
 #### WebSocket 이벤트 핸들러
@@ -55,7 +91,7 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ---
 
-### 2. RouletteService
+### 3. RouletteService
 
 룰렛 게임의 핵심 비즈니스 로직을 처리합니다.
 
@@ -67,14 +103,20 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 **처리 흐름**:
 
-1. `roomId` 및 `rid` 유효성 검증
-2. Socket.io 방에 소켓 추가
-3. Redis에 방 멤버 추가 (`room:members:{roomId}`)
-4. Redis에 소켓 정보 저장 (`room:socket:{socketId}`)
-5. 첫 입장자인 경우 방장으로 설정 (Redis NX 플래그 활용)
-6. 기본 방 설정 초기화 (없는 경우)
-7. 클라이언트에 응답 전송:
-   - `room:joined`: 입장 완료 (isOwner 포함)
+1. `roomId`, `role`, `rid` 유효성 검증
+2. 닉네임 처리:
+   - 닉네임이 제공되지 않은 경우 자동 생성 ('참가자 N')
+   - Redis 참가자 카운터를 사용하여 번호 할당
+3. 방장(owner) 역할인 경우:
+   - 기존 방장 확인
+   - 이미 방장이 있으면 입장 거부 (`room:join:rejected`)
+   - 방장이 없으면 현재 사용자를 방장으로 설정
+4. Socket.io 방에 소켓 추가
+5. Redis에 방 멤버 추가 (`room:members:{roomId}`)
+6. Redis에 소켓 정보 저장 (nickname, role 포함)
+7. 기본 방 설정 초기화 (없는 경우)
+8. 클라이언트에 응답 전송:
+   - `room:joined`: 입장 완료 (isOwner, nickname, rid 포함)
    - `room:config`: 현재 방 설정
    - `room:state`: 마지막 스핀 정보 (있는 경우)
 
@@ -82,6 +124,12 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 - `winnersCount`: 1
 - `winSentiment`: 'POSITIVE'
+
+**실패 시 응답**: `room:join:rejected`
+
+- `INVALID_REQUEST`: roomId 또는 role 누락
+- `INVALID_RID`: rid 없음
+- `OWNER_ALREADY_EXISTS`: 이미 방장이 존재
 
 ---
 
@@ -118,6 +166,7 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 6. 이벤트 브로드캐스트:
    - `spin:resolved`: 전체 방에 룰렛 시작 알림 (애니메이션 정보 포함)
    - `spin:outcome`: 각 참가자에게 개별 결과 (WIN/LOSE)
+   - `spin:result`: 전체 방에 결과 요약 (닉네임 포함)
 7. 방 상태 업데이트 (마지막 스핀 정보)
 8. 분산 락 해제
 
@@ -163,12 +212,26 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ### DTO
 
+#### CreateRoomDto
+
+```typescript
+{
+  nickname?: string;     // 방장 닉네임 (선택)
+  roomId: string;           // 생성된 방 ID
+  ownerToken: string;       // 방장 인증 토큰
+  ownerUrl: string;         // 방장 입장 링크
+  participantUrl: string;   // 참가자 입장 링크
+  createdAt: number;        // 생성 시각 (Unix ms)
+}
+```
+
 #### RoomJoinDto
 
 ```typescript
 {
-  roomId: string;        // 방 ID
-  nickname?: string;     // 닉네임 (선택, 현재 미사용)
+  roomId: string;              // 방 ID
+  role: 'owner' | 'participant'; // 입장 역할
+  nickname?: string;           // 닉네임 (선택, 없으면 자동 생성)
 }
 ```
 
@@ -195,15 +258,47 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ### Redis 데이터 구조
 
-| 키 패턴                          | 타입          | 설명                  | TTL    |
-| -------------------------------- | ------------- | --------------------- | ------ |
-| `room:config:{roomId}`           | String (JSON) | 방 설정               | 2시간  |
-| `room:owner:{roomId}`            | String        | 방장 rid              | 2시간  |
-| `room:members:{roomId}`          | Set           | 방 멤버 소켓 ID 목록  | 무제한 |
-| `room:socket:{socketId}`         | String (JSON) | 소켓 정보             | 2시간  |
-| `room:state:{roomId}`            | String (JSON) | 방 상태 (마지막 스핀) | 2시간  |
-| `lock:spin:{roomId}`             | String        | 스핀 분산 락          | 10초   |
-| `idem:spin:{roomId}:{requestId}` | String        | 멱등성 키             | 30초   |
+| 키 패턴                             | 타입          | 설명                            | TTL    |
+| ----------------------------------- | ------------- | ------------------------------- | ------ |
+| `room:config:{roomId}`              | String (JSON) | 방 설정                         | 2시간  |
+| `room:owner:{roomId}`               | String        | 방장 rid                        | 2시간  |
+| `room:owner:token:{roomId}`         | String        | 방장 인증 토큰                  | 2시간  |
+| `room:participant:counter:{roomId}` | Number        | 참가자 번호 카운터              | 2시간  |
+| `room:members:{roomId}`             | Set           | 방 멤버 소켓 ID 목록            | 무제한 |
+| `room:socket:{socketId}`            | String (JSON) | 소켓 정보 (nickname, role 포함) | 2시간  |
+| `room:state:{roomId}`               | String (JSON) | 방 상태 (마지막 스핀)           | 2시간  |
+| `lock:spin:{roomId}`                | String        | 스핀 분산 락                    | 10초   |
+| `idem:spin:{roomId}:{requestId}`    | String        | 멱등성 키                       | 30초   |
+
+---
+
+## API 명세
+
+### HTTP API
+
+#### `POST /rooms`
+
+방 생성 API
+
+**요청**:
+
+```json
+{
+  "nickname": "플레이어1" // 선택
+}
+```
+
+**응답**:
+
+```json
+{
+  "roomId": "room-abc123def456",
+  "ownerToken": "token-xyz...",
+  "ownerUrl": "http://localhost:3000/room/room-abc123def456?role=owner&token=token-xyz...",
+  "participantUrl": "http://localhost:3000/room/room-abc123def456?role=participant",
+  "createdAt": 1704729600000
+}
+```
 
 ---
 
@@ -218,11 +313,20 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 ```json
 {
   "roomId": "room-123",
-  "nickname": "플레이어1" // 선택
+  "role": "owner", // 또는 "participant"
+  "nickname": "플레이어1" // 선택, 없으면 "참가자 N" 자동 생성
 }
 ```
 
-**응답**: `room:joined`, `room:config`, `room:state` (아래 참조)
+**성공 응답**: `room:joined`, `room:config`, `room:state` (아래 참조)
+
+**실패 응답**: `room:join:rejected`
+
+```json
+{
+  "reason": "OWNER_ALREADY_EXISTS" // 또는 다른 실패 사유
+}
+```
 
 ---
 
@@ -287,8 +391,23 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
   "roomId": "room-123",
   "serverTime": 1704729600000,
   "you": {
-    "isOwner": true
+    "isOwner": true,
+    "nickname": "플레이어1",
+    "rid": "abc123def456..."
   }
+}
+```
+
+---
+
+#### `room:join:rejected`
+
+방 입장 거부 알림 (개별)
+
+```json
+{
+  "reason": "OWNER_ALREADY_EXISTS"
+  // 가능한 사유: "INVALID_REQUEST", "INVALID_RID", "OWNER_ALREADY_EXISTS"
 }
 ```
 
@@ -362,17 +481,29 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ---
 
+#### `spin:result`
+
+전체 참가자 결과 요약 (전체 방에 브로드캐스트)
+
+```json
+{
+  "roomId": "room-123",
+  "spinId": "3f5a8b9c2d1e4f6a8b7c9d0e1f2a3b4c",
+  "outcomes": [
+    { "nickname": "플레이어1", "outcome": "WIN" },
+    { "nickname": "참가자 1", "outcome": "LOSE" },
+    { "nickname": "참가자 2", "outcome": "LOSE" }
+  ]
+}
+```
+
+---
+
 ## 에러 처리
-
-### 연결 거부 사유
-
-- 쿠키 없음
-- `rid` 쿠키 없음
-- `rid` 검증 실패
 
 ### 요청 거부 사유
 
-- **방 입장**: roomId 없음, rid 없음
+- **방 입장**: roomId/role 누락, rid 없음, 이미 방장 존재
 - **설정 변경**: 방장 아님, winnersCount < 1
 - **스핀 요청**: 방장 아님, 중복 요청, 이미 스핀 중, 참가자 없음, 방 없음
 
@@ -382,8 +513,9 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ### 인증
 
-- 모든 WebSocket 연결은 쿠키 기반 `rid` 검증 필요
-- 방장 권한 검증은 Redis 기반
+- WebSocket 연결 시 자동으로 rid 생성 (방 내 유저 구분 용도)
+- 방장 권한은 Redis 기반으로 검증
+- 방장 토큰은 HTTP API 응답으로만 제공 (URL에 포함)
 
 ### 멱등성
 
@@ -420,16 +552,44 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 ## 설정 가능한 환경 변수
 
 - `CORS_ORIGIN`: WebSocket CORS 설정 (기본: `*`)
+- `FRONTEND_URL`: 프론트엔드 URL (기본: `http://localhost:3000`)
 - Redis 관련 설정은 RedisModule 참조
+
+---
+
+## 주요 변경사항 (v2.0)
+
+### ✅ 완료된 기능
+
+- [x] HTTP API를 통한 방 생성 (`POST /rooms`)
+- [x] role 기반 권한 관리 (owner/participant)
+- [x] 닉네임 자동 생성 기능 ('참가자 N')
+- [x] 결과에 닉네임 포함 (`spin:result` 이벤트)
+- [x] Session 모듈 제거 (rid는 방 내에서만 유저 구분)
+- [x] 방장 토큰 기반 인증
+
+### 플로우 변경
+
+**이전 (v1.0)**:
+
+```
+쿠키에서 rid 추출 → rid 검증 → 방 입장
+```
+
+**현재 (v2.0)**:
+
+```
+HTTP API로 방 생성 → 토큰 발급 → WebSocket 연결 시 rid 자동 생성 → role 기반 방 입장
+```
 
 ---
 
 ## 향후 개선 사항
 
-- [ ] 닉네임 기능 활용
 - [ ] 방 목록 조회 API
 - [ ] 방 삭제/종료 기능
 - [ ] 재연결 시 상태 복구
 - [ ] 스핀 히스토리 저장 및 조회
-- [ ] 방 참가자 목록 조회
+- [ ] 방 참가자 목록 실시간 조회
 - [ ] 방장 위임 기능
+- [ ] 닉네임 변경 기능
