@@ -8,7 +8,7 @@ import {
   IsEnum,
 } from 'class-validator';
 
-enum WinSentiment {
+export enum WinSentiment {
   POSITIVE = 'POSITIVE',
   NEGATIVE = 'NEGATIVE',
 }

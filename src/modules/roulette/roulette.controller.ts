@@ -36,10 +36,12 @@ export class RouletteController {
       console.error('Error setting initial owner nickname:', error);
     }
 
-    // Initialize room config
+    // Initialize room config with values from DTO or defaults
     const config = {
-      winnersCount: 1,
-      winSentiment: 'POSITIVE' as const,
+      winnersCount: createRoomDto.winnersCount ?? 1,
+      winSentiment: (createRoomDto.winSentiment ?? 'POSITIVE') as
+        | 'POSITIVE'
+        | 'NEGATIVE',
       updatedAt: Date.now(),
     };
     await this.redisService.setRoomConfig(roomId, config);

@@ -1,5 +1,14 @@
-import { IsString, IsOptional, MaxLength } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  MaxLength,
+  IsNumber,
+  IsInt,
+  Min,
+  IsEnum,
+} from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { WinSentiment } from './room-config-set.dto';
 
 export class CreateRoomDto {
   @ApiProperty({
@@ -12,4 +21,28 @@ export class CreateRoomDto {
   @IsString()
   @MaxLength(20)
   nickname?: string;
+
+  @ApiProperty({
+    description: '승자 수 (1명 이상, 미입력 시 1명)',
+    example: 3,
+    minimum: 1,
+    required: false,
+    default: 1,
+  })
+  @IsOptional()
+  @IsNumber()
+  @IsInt()
+  @Min(1)
+  winnersCount?: number;
+
+  @ApiProperty({
+    description: '승리 감정 (긍정 또는 부정, 미입력 시 POSITIVE)',
+    enum: WinSentiment,
+    example: WinSentiment.POSITIVE,
+    required: false,
+    default: WinSentiment.POSITIVE,
+  })
+  @IsOptional()
+  @IsEnum(WinSentiment)
+  winSentiment?: WinSentiment;
 }
