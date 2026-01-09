@@ -14,9 +14,12 @@
 ```
 메인 화면
   ↓
+(선택) 닉네임 입력
+  ↓
 [방 만들기] 버튼 클릭
   ↓
-POST /rooms API 호출 (빈 요청)
+POST /rooms API 호출
+  - { nickname?: string } (미입력 시 "생성자")
   ↓
 응답 수신:
   - roomId
@@ -28,11 +31,12 @@ POST /rooms API 호출 (빈 요청)
   - 쿼리 파라미터: roomId, role=owner, token=ownerToken
   ↓
 WebSocket 연결 + room:join 이벤트 전송
-  - { roomId, role: 'owner', nickname? }
+  - { roomId, role: 'owner' }
+  - nickname 생략 시 방 생성 시 지정한 닉네임 사용
   ↓
 room:joined 이벤트 수신
   - isOwner: true
-  - nickname
+  - nickname (방 생성 시 지정한 닉네임 또는 "생성자")
   - rid
 ```
 
@@ -122,7 +126,7 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 **API 호출:**
 
 - `POST /rooms` - 방 생성
-  - Request body: 없음 (빈 POST 요청)
+  - Request body: `{ nickname?: string }` (선택 사항, 미입력 시 "생성자")
   - Response: `{ roomId, ownerToken, ownerUrl, participantUrl, createdAt }`
 
 **라우팅:**
@@ -152,6 +156,7 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 **송신:**
 
 - `room:join` - 방 입장
+
   ```json
   {
     "roomId": "room-abc123",
@@ -161,6 +166,7 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   ```
 
 - `participant:ready:toggle` - 준비 상태 토글 (참가자만)
+
   ```json
   {
     "roomId": "room-abc123",
@@ -204,6 +210,7 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   ```
 
 - `room:join:rejected` - 입장 거부
+
   ```json
   {
     "reason": "OWNER_ALREADY_EXISTS" | "INVALID_REQUEST" | "INVALID_RID"
@@ -249,6 +256,7 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   ```
 
 - `nickname:change:rejected` - 닉네임 변경 거부
+
   ```json
   {
     "roomId": "room-abc123",
@@ -388,6 +396,7 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   ```
 
 - `spin:rejected` - 스핀 거부
+
   ```json
   {
     "roomId": "room-abc123",
@@ -549,7 +558,8 @@ interface RoomStore {
 
 ### 1. 닉네임 처리 (v2.1 업데이트)
 
-- 방 입장 시 닉네임을 입력하지 않으면 서버에서 자동으로 '참가자 N' 부여
+- **방장**: 방 생성 시 닉네임 지정 가능 (미입력 시 '생성자')
+- **참가자**: 방 입장 시 닉네임을 입력하지 않으면 서버에서 자동으로 '참가자 N' 부여
 - 방 입장 후 닉네임 변경 가능 (1-20자)
 - 닉네임 변경 시 방장에게 실시간으로 업데이트됨
 - 변경된 닉네임은 룰렛 결과에도 반영됨
@@ -585,6 +595,7 @@ interface RoomStore {
 ### 7. 준비 상태 표시 (v2.1 신규)
 
 **방장 화면:**
+
 - 참가자 목록에 각 참가자의 준비 상태 표시
 - 준비 완료: ✓ 아이콘 (초록색)
 - 준비 안됨: ⏳ 아이콘 (회색)
@@ -592,6 +603,7 @@ interface RoomStore {
 - 모든 참가자 준비 시 [룰렛 돌리기] 버튼 활성화
 
 **참가자 화면:**
+
 - [준비 완료] 토글 버튼
 - 준비 완료 상태에서는 [준비 취소] 버튼으로 변경
 - 준비 상태는 룰렛을 돌린 후에도 유지됨
@@ -602,9 +614,9 @@ interface RoomStore {
 
 ### HTTP API
 
-| Method | Endpoint | Description | Request Body            | Response                                                      |
-| ------ | -------- | ----------- | ----------------------- | ------------------------------------------------------------- |
-| POST   | `/rooms` | 방 생성     | `{ nickname?: string }` | `{ roomId, ownerToken, ownerUrl, participantUrl, createdAt }` |
+| Method | Endpoint | Description | Request Body                                 | Response                                                      |
+| ------ | -------- | ----------- | -------------------------------------------- | ------------------------------------------------------------- |
+| POST   | `/rooms` | 방 생성     | `{ nickname?: string }` (미입력 시 "생성자") | `{ roomId, ownerToken, ownerUrl, participantUrl, createdAt }` |
 
 ### WebSocket 이벤트
 
@@ -620,21 +632,21 @@ interface RoomStore {
 
 #### Server → Client
 
-| Event                       | Payload                                                                           | Description                  | 수신 대상 |
-| --------------------------- | --------------------------------------------------------------------------------- | ---------------------------- | --------- |
-| `room:joined`               | `{ roomId, serverTime, you: { isOwner, nickname, rid } }`                         | 방 입장 완료                 | 본인      |
-| `room:join:rejected`        | `{ reason }`                                                                      | 방 입장 거부                 | 본인      |
-| `room:config`               | `{ roomId, winnersCount, winSentiment, updatedAt }`                               | 방 설정 정보                 | 방 전체   |
-| `room:config:rejected`      | `{ roomId, reason }`                                                              | 설정 변경 거부               | 본인      |
-| `room:state`                | `{ roomId, ownerRid, lastSpin? }`                                                 | 방 상태 정보 (입장 시)       | 본인      |
-| `room:participants`         | `{ roomId, participants, readyCount, totalCount, allReady }`                      | 참가자 리스트 (v2.1)         | 방장만    |
-| `nickname:changed`          | `{ roomId, nickname }`                                                            | 닉네임 변경 확인 (v2.1)      | 본인      |
-| `nickname:change:rejected`  | `{ roomId, reason }`                                                              | 닉네임 변경 거부 (v2.1)      | 본인      |
-| `ready:toggle:rejected`     | `{ roomId, reason }`                                                              | 준비 상태 변경 거부 (v2.1)   | 본인      |
-| `spin:resolved`             | `{ roomId, requestId, spinId, winnersCount, winSentiment, decidedAt, animation }` | 스핀 시작                    | 방 전체   |
-| `spin:outcome`              | `{ roomId, spinId, outcome, winSentiment }`                                       | 개인 결과                    | 본인      |
-| `spin:result`               | `{ roomId, spinId, outcomes }`                                                    | 전체 결과                    | 방 전체   |
-| `spin:rejected`             | `{ roomId, requestId, reason }`                                                   | 스핀 거부                    | 본인      |
+| Event                      | Payload                                                                           | Description                | 수신 대상 |
+| -------------------------- | --------------------------------------------------------------------------------- | -------------------------- | --------- |
+| `room:joined`              | `{ roomId, serverTime, you: { isOwner, nickname, rid } }`                         | 방 입장 완료               | 본인      |
+| `room:join:rejected`       | `{ reason }`                                                                      | 방 입장 거부               | 본인      |
+| `room:config`              | `{ roomId, winnersCount, winSentiment, updatedAt }`                               | 방 설정 정보               | 방 전체   |
+| `room:config:rejected`     | `{ roomId, reason }`                                                              | 설정 변경 거부             | 본인      |
+| `room:state`               | `{ roomId, ownerRid, lastSpin? }`                                                 | 방 상태 정보 (입장 시)     | 본인      |
+| `room:participants`        | `{ roomId, participants, readyCount, totalCount, allReady }`                      | 참가자 리스트 (v2.1)       | 방장만    |
+| `nickname:changed`         | `{ roomId, nickname }`                                                            | 닉네임 변경 확인 (v2.1)    | 본인      |
+| `nickname:change:rejected` | `{ roomId, reason }`                                                              | 닉네임 변경 거부 (v2.1)    | 본인      |
+| `ready:toggle:rejected`    | `{ roomId, reason }`                                                              | 준비 상태 변경 거부 (v2.1) | 본인      |
+| `spin:resolved`            | `{ roomId, requestId, spinId, winnersCount, winSentiment, decidedAt, animation }` | 스핀 시작                  | 방 전체   |
+| `spin:outcome`             | `{ roomId, spinId, outcome, winSentiment }`                                       | 개인 결과                  | 본인      |
+| `spin:result`              | `{ roomId, spinId, outcomes }`                                                    | 전체 결과                  | 방 전체   |
+| `spin:rejected`            | `{ roomId, requestId, reason }`                                                   | 스핀 거부                  | 본인      |
 
 ---
 

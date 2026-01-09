@@ -60,10 +60,33 @@ export class RouletteService {
     // Determine nickname
     let nickname = data.nickname?.trim();
     if (!nickname) {
-      // Generate auto nickname
-      const participantNumber =
-        await this.redisService.getNextParticipantNumber(roomId);
-      nickname = `참가자 ${participantNumber}`;
+      if (role === 'owner') {
+        // Check if there's an initial nickname set during room creation
+        let initialNickname: string | null = null;
+        try {
+          initialNickname =
+            await this.redisService.getInitialOwnerNickname(roomId);
+        } catch (error: unknown) {
+          console.error('Error getting initial owner nickname:', error);
+        }
+
+        if (initialNickname) {
+          nickname = initialNickname;
+          // Remove initial nickname after use
+          try {
+            await this.redisService.removeInitialOwnerNickname(roomId);
+          } catch (error: unknown) {
+            console.error('Error removing initial owner nickname:', error);
+          }
+        } else {
+          nickname = '생성자';
+        }
+      } else {
+        // Generate auto nickname for participants
+        const participantNumber =
+          await this.redisService.getNextParticipantNumber(roomId);
+        nickname = `참가자 ${participantNumber}`;
+      }
     }
 
     // Verify owner token if role is owner

@@ -43,7 +43,12 @@ HTTP API를 통한 방 생성을 담당하는 컨트롤러입니다.
 **기능**: 새로운 룰렛 방 생성
 
 **요청 Body**:
-**요청 Body**: 없음 (빈 POST 요청)
+
+```json
+{
+  "nickname": "플레이어1" // 선택 사항, 미입력 시 "생성자"로 설정됨
+}
+```
 
 **응답**:
 
@@ -62,8 +67,9 @@ HTTP API를 통한 방 생성을 담당하는 컨트롤러입니다.
 1. 고유한 roomId 생성 (16자 hex)
 2. 방장 인증용 ownerToken 생성 (64자 hex)
 3. Redis에 토큰 저장 (2시간 TTL)
-4. 기본 방 설정 초기화
-5. 방장/참가자 URL 생성 및 반환
+4. 방장 초기 닉네임 저장 (미입력 시 "생성자", 2시간 TTL)
+5. 기본 방 설정 초기화
+6. 방장/참가자 URL 생성 및 반환
 
 ---
 
@@ -109,7 +115,8 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 1. `roomId`, `role`, `rid` 유효성 검증
 2. 닉네임 처리:
-   - 닉네임이 제공되지 않은 경우 자동 생성 ('참가자 N')
+   - 방장: 닉네임 미입력 시 방 생성 시 설정한 닉네임 사용 (기본값: '생성자')
+   - 참가자: 닉네임 미입력 시 자동 생성 ('참가자 N')
    - Redis 참가자 카운터를 사용하여 번호 할당
 3. 방장(owner) 역할인 경우:
    - 기존 방장 확인
@@ -340,18 +347,19 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ### Redis 데이터 구조
 
-| 키 패턴                             | 타입          | 설명                            | TTL    |
-| ----------------------------------- | ------------- | ------------------------------- | ------ |
-| `room:config:{roomId}`              | String (JSON) | 방 설정                         | 2시간  |
-| `room:owner:{roomId}`               | String        | 방장 rid                        | 2시간  |
-| `room:owner:token:{roomId}`         | String        | 방장 인증 토큰                  | 2시간  |
-| `room:participant:counter:{roomId}` | Number        | 참가자 번호 카운터              | 2시간  |
-| `room:members:{roomId}`             | Set           | 방 멤버 소켓 ID 목록            | 무제한 |
-| `room:socket:{socketId}`            | String (JSON) | 소켓 정보 (nickname, role 포함) | 2시간  |
-| `room:state:{roomId}`               | String (JSON) | 방 상태 (마지막 스핀)           | 2시간  |
-| `room:ready:{roomId}`               | Set           | 준비 완료한 참가자 소켓 ID 목록 | 무제한 |
-| `lock:spin:{roomId}`                | String        | 스핀 분산 락                    | 10초   |
-| `idem:spin:{roomId}:{requestId}`    | String        | 멱등성 키                       | 30초   |
+| 키 패턴                                | 타입          | 설명                            | TTL    |
+| -------------------------------------- | ------------- | ------------------------------- | ------ |
+| `room:config:{roomId}`                 | String (JSON) | 방 설정                         | 2시간  |
+| `room:owner:{roomId}`                  | String        | 방장 rid                        | 2시간  |
+| `room:owner:token:{roomId}`            | String        | 방장 인증 토큰                  | 2시간  |
+| `room:owner:initial-nickname:{roomId}` | String        | 방장 초기 닉네임 (방 생성 시)   | 2시간  |
+| `room:participant:counter:{roomId}`    | Number        | 참가자 번호 카운터              | 2시간  |
+| `room:members:{roomId}`                | Set           | 방 멤버 소켓 ID 목록            | 무제한 |
+| `room:socket:{socketId}`               | String (JSON) | 소켓 정보 (nickname, role 포함) | 2시간  |
+| `room:state:{roomId}`                  | String (JSON) | 방 상태 (마지막 스핀)           | 2시간  |
+| `room:ready:{roomId}`                  | Set           | 준비 완료한 참가자 소켓 ID 목록 | 무제한 |
+| `lock:spin:{roomId}`                   | String        | 스핀 분산 락                    | 10초   |
+| `idem:spin:{roomId}:{requestId}`       | String        | 멱등성 키                       | 30초   |
 
 ---
 
@@ -367,7 +375,7 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ```json
 {
-  "nickname": "플레이어1" // 선택
+  "nickname": "플레이어1" // 선택 사항, 미입력 시 "생성자"로 설정됨
 }
 ```
 
@@ -397,7 +405,7 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 {
   "roomId": "room-123",
   "role": "owner", // 또는 "participant"
-  "nickname": "플레이어1" // 선택, 없으면 "참가자 N" 자동 생성
+  "nickname": "플레이어1" // 선택, 방장: "생성자" (또는 방 생성 시 지정한 닉네임), 참가자: "참가자 N"
 }
 ```
 

@@ -1,7 +1,8 @@
-import { Controller, Post } from '@nestjs/common';
+import { Controller, Post, Body } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { randomBytes } from 'crypto';
 import { RedisService } from '../../common/redis/redis.service';
+import { CreateRoomDto } from './dto/create-room.dto';
 import type { CreateRoomResponseDto } from './dto/create-room-response.dto';
 
 @ApiTags('Roulette')
@@ -15,7 +16,9 @@ export class RouletteController {
     status: 201,
     description: '방이 성공적으로 생성되었습니다.',
   })
-  async createRoom(): Promise<CreateRoomResponseDto> {
+  async createRoom(
+    @Body() createRoomDto: CreateRoomDto,
+  ): Promise<CreateRoomResponseDto> {
     // Generate unique room ID
     const roomId = `room-${randomBytes(8).toString('hex')}`;
 
@@ -24,6 +27,14 @@ export class RouletteController {
 
     // Store owner token in Redis
     await this.redisService.setRoomOwnerToken(roomId, ownerToken);
+
+    // Store initial owner nickname (기본값: '생성자')
+    const ownerNickname = createRoomDto.nickname?.trim() || '생성자';
+    try {
+      await this.redisService.setInitialOwnerNickname(roomId, ownerNickname);
+    } catch (error: unknown) {
+      console.error('Error setting initial owner nickname:', error);
+    }
 
     // Initialize room config
     const config = {

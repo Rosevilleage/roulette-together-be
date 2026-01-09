@@ -269,4 +269,25 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       await this.setSocketInfo(socketId, socketInfo);
     }
   }
+
+  // Initial owner nickname (set during room creation)
+  async setInitialOwnerNickname(
+    roomId: string,
+    nickname: string,
+  ): Promise<void> {
+    await this.client.set(
+      `room:owner:initial-nickname:${roomId}`,
+      nickname,
+      'EX',
+      Math.floor(this.ttl / 1000),
+    );
+  }
+
+  async getInitialOwnerNickname(roomId: string): Promise<string | null> {
+    return this.client.get(`room:owner:initial-nickname:${roomId}`);
+  }
+
+  async removeInitialOwnerNickname(roomId: string): Promise<void> {
+    await this.client.del(`room:owner:initial-nickname:${roomId}`);
+  }
 }

@@ -37,7 +37,7 @@ WebSocket 연결: \`ws://localhost:3000\`
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api', app, document, {
+  SwaggerModule.setup('api-docs', app, document, {
     customSiteTitle: 'Rullette Together API Docs',
     customCss: '.swagger-ui .topbar { display: none }',
     swaggerOptions: {
