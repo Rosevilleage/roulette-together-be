@@ -53,12 +53,32 @@ room:joined 이벤트 수신
   - isOwner: false
   - nickname (입력하지 않았으면 '참가자 N' 자동 생성됨)
   - rid
+  ↓
+방 대기 화면
+  - 닉네임 변경 가능
+  - [준비 완료] 버튼 표시
 ```
 
-### 3. 룰렛 스핀 플로우
+### 3. 참가자 준비 플로우 (v2.1 신규)
+
+```
+참가자가 [준비 완료] 버튼 클릭
+  ↓
+participant:ready:toggle 이벤트 전송
+  - { roomId, ready: true }
+  ↓
+방장에게 room:participants 이벤트 수신
+  - 준비 완료한 참가자 수 업데이트
+  ↓
+모든 참가자가 준비 완료되면
+  - 방장의 [룰렛 돌리기] 버튼 활성화
+```
+
+### 4. 룰렛 스핀 플로우
 
 ```
 방장이 [룰렛 돌리기] 버튼 클릭
+  - 조건: 모든 참가자가 준비 완료 상태
   ↓
 spin:request 이벤트 전송
   - { roomId, requestId }
@@ -122,9 +142,9 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 **기능:**
 
 - WebSocket 연결 및 방 입장
-- 현재 참가자 목록 표시
-- 방장 전용: 룰렛 설정, 스핀 버튼
-- 참가자: 대기 화면
+- 현재 참가자 목록 표시 (방장만)
+- 방장 전용: 룰렛 설정, 스핀 버튼, 참가자 준비 상태 확인
+- 참가자: 닉네임 변경, 준비 완료 버튼
 - 링크 공유 기능 (방장만)
 
 **WebSocket 이벤트:**
@@ -137,6 +157,22 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
     "roomId": "room-abc123",
     "role": "owner",
     "nickname": "플레이어1"
+  }
+  ```
+
+- `participant:ready:toggle` - 준비 상태 토글 (참가자만)
+  ```json
+  {
+    "roomId": "room-abc123",
+    "ready": true
+  }
+  ```
+
+- `participant:nickname:change` - 닉네임 변경
+  ```json
+  {
+    "roomId": "room-abc123",
+    "nickname": "새로운닉네임"
   }
   ```
 
@@ -171,6 +207,60 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   ```json
   {
     "reason": "OWNER_ALREADY_EXISTS" | "INVALID_REQUEST" | "INVALID_RID"
+  }
+  ```
+
+- `room:participants` - 참가자 리스트 (방장에게만 전송)
+
+  ```json
+  {
+    "roomId": "room-abc123",
+    "participants": [
+      {
+        "rid": "abc123def456...",
+        "nickname": "플레이어1",
+        "ready": true
+      },
+      {
+        "rid": "xyz789uvw012...",
+        "nickname": "참가자 2",
+        "ready": false
+      }
+    ],
+    "readyCount": 1,
+    "totalCount": 2,
+    "allReady": false
+  }
+  ```
+
+  **전송 시점:**
+  - 참가자가 방에 입장할 때
+  - 참가자가 준비 상태를 변경할 때
+  - 참가자가 닉네임을 변경할 때
+  - 참가자가 방을 나갈 때
+
+- `nickname:changed` - 닉네임 변경 확인 (개인)
+
+  ```json
+  {
+    "roomId": "room-abc123",
+    "nickname": "새로운닉네임"
+  }
+  ```
+
+- `nickname:change:rejected` - 닉네임 변경 거부
+  ```json
+  {
+    "roomId": "room-abc123",
+    "reason": "INVALID_NICKNAME"
+  }
+  ```
+
+- `ready:toggle:rejected` - 준비 상태 변경 거부
+  ```json
+  {
+    "roomId": "room-abc123",
+    "reason": "ONLY_PARTICIPANTS_CAN_READY"
   }
   ```
 
@@ -215,14 +305,30 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 
 ---
 
-### 4. 룰렛 스핀 화면
+### 4. 참가자 관리 화면 (방장 전용, v2.1 신규)
+
+**표시 정보:**
+
+- 참가자 목록 (닉네임, 준비 상태)
+- 준비 완료한 참가자 수 / 전체 참가자 수
+- 모든 참가자 준비 완료 여부
+
+**UI:**
+
+- 각 참가자 항목에 준비 상태 표시 (✓ 또는 ⏳)
+- 하단에 준비 현황 요약 (예: "2/3명 준비 완료")
+
+### 5. 룰렛 스핀 화면
 
 **방장:**
 
-- [룰렛 돌리기] 버튼 활성화
+- [룰렛 돌리기] 버튼
+  - 활성화 조건: 모든 참가자가 준비 완료 상태
+  - 비활성화 시: "모든 참가자가 준비해야 합니다" 툴팁 표시
 
 **참가자:**
 
+- [준비 완료] / [준비 취소] 토글 버튼
 - 대기 상태 표시
 
 **WebSocket 이벤트:**
@@ -286,13 +392,19 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   {
     "roomId": "room-abc123",
     "requestId": "req-unique-id",
-    "reason": "NOT_OWNER" | "ALREADY_SPINNING" | "NO_MEMBERS"
+    "reason": "NOT_OWNER" | "ALREADY_SPINNING" | "NO_MEMBERS" | "NOT_ALL_READY"
   }
   ```
 
+  **reason 설명:**
+  - `NOT_OWNER`: 방장이 아님
+  - `ALREADY_SPINNING`: 이미 스핀 진행 중
+  - `NO_MEMBERS`: 참가자 없음
+  - `NOT_ALL_READY`: 모든 참가자가 준비 완료하지 않음
+
 ---
 
-### 5. 결과 화면
+### 6. 결과 화면
 
 **표시 정보:**
 
@@ -327,7 +439,9 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   - 현재 방 정보 (roomId, role, isOwner)
   - 사용자 정보 (nickname, rid)
   - 방 설정 (winnersCount, winSentiment)
-  - 참가자 목록
+  - 참가자 목록 (방장만, v2.1)
+  - 참가자 준비 상태 (v2.1)
+  - 본인 준비 상태 (참가자만, v2.1)
   - 스핀 상태 (진행 중, 결과)
 
 ### WebSocket 관리
@@ -388,11 +502,17 @@ interface RoomStore {
     updatedAt: number;
   } | null;
 
-  // 참가자 목록 (선택사항, 서버에서 별도로 제공할 경우)
+  // 참가자 목록 (v2.1, 방장에게만 제공)
   participants: Array<{
     nickname: string;
     rid: string;
+    ready: boolean;
   }>;
+  readyCount: number;
+  allReady: boolean;
+
+  // 본인 준비 상태 (v2.1, 참가자만)
+  myReady: boolean;
 
   // 스핀 상태
   spin: {
@@ -413,6 +533,9 @@ interface RoomStore {
   ) => void;
   setMyInfo: (nickname: string, rid: string, isOwner: boolean) => void;
   setConfig: (config: any) => void;
+  setParticipants: (participants: any[]) => void; // v2.1
+  setMyReady: (ready: boolean) => void; // v2.1
+  updateMyNickname: (nickname: string) => void; // v2.1
   startSpin: (spinId: string) => void;
   setMyOutcome: (outcome: 'WIN' | 'LOSE') => void;
   setAllOutcomes: (outcomes: any[]) => void;
@@ -424,10 +547,12 @@ interface RoomStore {
 
 ## UI/UX 고려사항
 
-### 1. 닉네임 처리
+### 1. 닉네임 처리 (v2.1 업데이트)
 
 - 방 입장 시 닉네임을 입력하지 않으면 서버에서 자동으로 '참가자 N' 부여
-- (선택) 방 입장 후 닉네임 변경 기능 (추가 개발 필요)
+- 방 입장 후 닉네임 변경 가능 (1-20자)
+- 닉네임 변경 시 방장에게 실시간으로 업데이트됨
+- 변경된 닉네임은 룰렛 결과에도 반영됨
 
 ### 2. 링크 공유
 
@@ -457,6 +582,20 @@ interface RoomStore {
 - 키보드 네비게이션
 - 색맹 고려 (색상만으로 정보 전달하지 않기)
 
+### 7. 준비 상태 표시 (v2.1 신규)
+
+**방장 화면:**
+- 참가자 목록에 각 참가자의 준비 상태 표시
+- 준비 완료: ✓ 아이콘 (초록색)
+- 준비 안됨: ⏳ 아이콘 (회색)
+- 하단에 "2/3명 준비 완료" 형태로 요약 표시
+- 모든 참가자 준비 시 [룰렛 돌리기] 버튼 활성화
+
+**참가자 화면:**
+- [준비 완료] 토글 버튼
+- 준비 완료 상태에서는 [준비 취소] 버튼으로 변경
+- 준비 상태는 룰렛을 돌린 후에도 유지됨
+
 ---
 
 ## API 엔드포인트
@@ -471,25 +610,31 @@ interface RoomStore {
 
 #### Client → Server
 
-| Event             | Payload                                  | Description             |
-| ----------------- | ---------------------------------------- | ----------------------- |
-| `room:join`       | `{ roomId, role, nickname? }`            | 방 입장 요청            |
-| `room:config:set` | `{ roomId, winnersCount, winSentiment }` | 방 설정 변경 (방장만)   |
-| `spin:request`    | `{ roomId, requestId }`                  | 룰렛 스핀 요청 (방장만) |
+| Event                         | Payload                                  | Description             |
+| ----------------------------- | ---------------------------------------- | ----------------------- |
+| `room:join`                   | `{ roomId, role, nickname? }`            | 방 입장 요청            |
+| `room:config:set`             | `{ roomId, winnersCount, winSentiment }` | 방 설정 변경 (방장만)   |
+| `spin:request`                | `{ roomId, requestId }`                  | 룰렛 스핀 요청 (방장만) |
+| `participant:ready:toggle`    | `{ roomId, ready }`                      | 준비 상태 토글 (v2.1)   |
+| `participant:nickname:change` | `{ roomId, nickname }`                   | 닉네임 변경 (v2.1)      |
 
 #### Server → Client
 
-| Event                  | Payload                                                                           | Description            | 수신 대상 |
-| ---------------------- | --------------------------------------------------------------------------------- | ---------------------- | --------- |
-| `room:joined`          | `{ roomId, serverTime, you: { isOwner, nickname, rid } }`                         | 방 입장 완료           | 본인      |
-| `room:join:rejected`   | `{ reason }`                                                                      | 방 입장 거부           | 본인      |
-| `room:config`          | `{ roomId, winnersCount, winSentiment, updatedAt }`                               | 방 설정 정보           | 방 전체   |
-| `room:config:rejected` | `{ roomId, reason }`                                                              | 설정 변경 거부         | 본인      |
-| `room:state`           | `{ roomId, ownerRid, lastSpin? }`                                                 | 방 상태 정보 (입장 시) | 본인      |
-| `spin:resolved`        | `{ roomId, requestId, spinId, winnersCount, winSentiment, decidedAt, animation }` | 스핀 시작              | 방 전체   |
-| `spin:outcome`         | `{ roomId, spinId, outcome, winSentiment }`                                       | 개인 결과              | 본인      |
-| `spin:result`          | `{ roomId, spinId, outcomes }`                                                    | 전체 결과              | 방 전체   |
-| `spin:rejected`        | `{ roomId, requestId, reason }`                                                   | 스핀 거부              | 본인      |
+| Event                       | Payload                                                                           | Description                  | 수신 대상 |
+| --------------------------- | --------------------------------------------------------------------------------- | ---------------------------- | --------- |
+| `room:joined`               | `{ roomId, serverTime, you: { isOwner, nickname, rid } }`                         | 방 입장 완료                 | 본인      |
+| `room:join:rejected`        | `{ reason }`                                                                      | 방 입장 거부                 | 본인      |
+| `room:config`               | `{ roomId, winnersCount, winSentiment, updatedAt }`                               | 방 설정 정보                 | 방 전체   |
+| `room:config:rejected`      | `{ roomId, reason }`                                                              | 설정 변경 거부               | 본인      |
+| `room:state`                | `{ roomId, ownerRid, lastSpin? }`                                                 | 방 상태 정보 (입장 시)       | 본인      |
+| `room:participants`         | `{ roomId, participants, readyCount, totalCount, allReady }`                      | 참가자 리스트 (v2.1)         | 방장만    |
+| `nickname:changed`          | `{ roomId, nickname }`                                                            | 닉네임 변경 확인 (v2.1)      | 본인      |
+| `nickname:change:rejected`  | `{ roomId, reason }`                                                              | 닉네임 변경 거부 (v2.1)      | 본인      |
+| `ready:toggle:rejected`     | `{ roomId, reason }`                                                              | 준비 상태 변경 거부 (v2.1)   | 본인      |
+| `spin:resolved`             | `{ roomId, requestId, spinId, winnersCount, winSentiment, decidedAt, animation }` | 스핀 시작                    | 방 전체   |
+| `spin:outcome`              | `{ roomId, spinId, outcome, winSentiment }`                                       | 개인 결과                    | 본인      |
+| `spin:result`               | `{ roomId, spinId, outcomes }`                                                    | 전체 결과                    | 방 전체   |
+| `spin:rejected`             | `{ roomId, requestId, reason }`                                                   | 스핀 거부                    | 본인      |
 
 ---
 
@@ -523,18 +668,23 @@ NEXT_PUBLIC_FRONTEND_URL=http://localhost:3000
 
 ### Phase 3: 방 관리
 
-1. 참가자 목록 표시
-2. 방장 전용 설정 UI (당첨자 수, 감정)
-3. room:config:set 이벤트 처리
-4. 링크 공유 기능
+1. 방장 전용 설정 UI (당첨자 수, 감정)
+2. room:config:set 이벤트 처리
+3. 링크 공유 기능
+4. 참가자 목록 표시 (방장만, v2.1)
+5. 참가자 준비 상태 실시간 표시 (v2.1)
+6. 참가자 준비 완료 버튼 (v2.1)
+7. 닉네임 변경 기능 (v2.1)
 
 ### Phase 4: 룰렛 스핀
 
 1. 룰렛 UI 구현
-2. spin:request 이벤트 송신
-3. spin:resolved 수신 및 애니메이션 시작
-4. spin:outcome 수신 및 개인 결과 저장
-5. spin:result 수신 및 결과 화면 표시
+2. 준비 완료 상태 확인 후 스핀 버튼 활성화 (v2.1)
+3. spin:request 이벤트 송신
+4. spin:resolved 수신 및 애니메이션 시작
+5. spin:outcome 수신 및 개인 결과 저장
+6. spin:result 수신 및 결과 화면 표시
+7. NOT_ALL_READY 에러 처리 (v2.1)
 
 ### Phase 5: 완성도 향상
 
@@ -565,20 +715,34 @@ NEXT_PUBLIC_FRONTEND_URL=http://localhost:3000
 
 - [ ] 룰렛 설정 변경
 - [ ] 참가자는 설정 변경 불가
-- [ ] 룰렛 돌리기 버튼 활성화 (방장만)
+- [ ] 참가자 목록 실시간 조회 (v2.1)
+- [ ] 참가자 준비 상태 실시간 업데이트 (v2.1)
+- [ ] 모든 참가자 준비 시에만 룰렛 돌리기 버튼 활성화 (v2.1)
 
-### 4. 룰렛 스핀 테스트
+### 4. 참가자 기능 테스트 (v2.1)
+
+- [ ] 준비 완료 버튼 클릭
+- [ ] 준비 상태 토글 (완료 ↔ 취소)
+- [ ] 닉네임 변경 기능
+- [ ] 변경된 닉네임이 방장에게 실시간 반영
+- [ ] 방장은 준비 상태 변경 불가
+
+### 5. 룰렛 스핀 테스트
 
 - [ ] 방장이 스핀 요청
+- [ ] 모든 참가자 준비 안됐을 때 스핀 거부 (v2.1)
 - [ ] 모든 참가자가 spin:resolved 수신
 - [ ] 애니메이션 동기화
 - [ ] 각 참가자가 개인 결과 수신
-- [ ] 전체 결과 표시 (닉네임 포함)
+- [ ] 전체 결과 표시 (변경된 닉네임 포함, v2.1)
 
-### 5. 에러 처리 테스트
+### 6. 에러 처리 테스트
 
 - [ ] 이미 방장이 있는 방에 owner로 입장 시도
 - [ ] 참가자가 스핀 요청 시 거부
+- [ ] 모든 참가자 준비 안됐을 때 스핀 거부 (v2.1)
+- [ ] 닉네임 길이 초과 시 거부 (v2.1)
+- [ ] 방장의 준비 상태 변경 시도 시 거부 (v2.1)
 - [ ] WebSocket 연결 끊김 시 재연결
 
 ---
@@ -591,9 +755,10 @@ NEXT_PUBLIC_FRONTEND_URL=http://localhost:3000
    - 방 생성 시 비밀번호 설정
    - 참가자 입장 시 비밀번호 요구
 
-2. **참가자 목록 실시간 업데이트**
+2. **참가자 목록 실시간 업데이트** (✅ v2.1에서 구현됨)
    - 참가자 입장/퇴장 시 알림
    - 현재 참가자 수 표시
+   - 각 참가자의 준비 상태 표시
 
 3. **방 설정 확장**
    - 최대 참가자 수 제한
@@ -663,8 +828,18 @@ http://localhost:3001/api-docs
 
 1. **방 생성**: HTTP API로 방 생성 및 방장/참가자 링크 발급
 2. **방 입장**: WebSocket 연결 및 역할(방장/참가자) 구분
-3. **닉네임 관리**: 입력하지 않으면 자동 생성 ('참가자 N')
-4. **룰렛 스핀**: 방장이 스핀 요청, 모든 참가자에게 결과 전달
-5. **결과 표시**: 닉네임과 함께 당첨/낙첨 결과 표시
+3. **닉네임 관리**: 입력하지 않으면 자동 생성 ('참가자 N'), 입장 후 변경 가능 (v2.1)
+4. **준비 상태 시스템**: 모든 참가자가 준비 완료해야 룰렛 시작 (v2.1)
+5. **참가자 관리**: 방장에게 실시간 참가자 목록 및 준비 상태 표시 (v2.1)
+6. **룰렛 스핀**: 방장이 스핀 요청, 모든 참가자에게 결과 전달
+7. **결과 표시**: 변경된 닉네임과 함께 당첨/낙첨 결과 표시
 
-**백엔드는 이미 구현 완료**되었으므로, 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+**백엔드는 이미 구현 완료**되었으므로 (v2.1 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+
+### v2.1 주요 업데이트 (2025-01-09)
+
+- ✅ 참가자 준비 상태 시스템 추가
+- ✅ 닉네임 변경 기능 추가
+- ✅ 방장에게 참가자 리스트 실시간 전송
+- ✅ 모든 참가자 준비 완료 시에만 룰렛 시작 가능
+- ✅ 준비 상태는 룰렛 회전 후에도 유지
