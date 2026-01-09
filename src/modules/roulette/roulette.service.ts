@@ -4,6 +4,8 @@ import { randomBytes } from 'crypto';
 import { RoomJoinDto } from './dto/room-join.dto';
 import { RoomConfigSetDto } from './dto/room-config-set.dto';
 import { SpinRequestDto } from './dto/spin-request.dto';
+import { ReadyToggleDto } from './dto/ready-toggle.dto';
+import { NicknameChangeDto } from './dto/nickname-change.dto';
 import { RedisService } from 'src/common/redis/redis.service';
 
 interface SocketWithData extends Socket {
@@ -33,7 +35,11 @@ export class RouletteService {
     return role === 'owner' || role === 'participant' ? role : null;
   }
 
-  async handleRoomJoin(socket: Socket, data: RoomJoinDto): Promise<void> {
+  async handleRoomJoin(
+    socket: Socket,
+    data: RoomJoinDto,
+    server: Server,
+  ): Promise<void> {
     if (!data?.roomId || !data?.role) {
       socket.emit('room:join:rejected', {
         reason: 'INVALID_REQUEST',
@@ -135,6 +141,11 @@ export class RouletteService {
         ownerRid: ownerRid || '',
         lastSpin: state.lastSpin,
       });
+    }
+
+    // Broadcast participants list to owner (if a participant joined)
+    if (role === 'participant') {
+      await this.broadcastParticipantsToOwner(roomId, server);
     }
   }
 
@@ -243,11 +254,16 @@ export class RouletteService {
       // Get active members
       const allSocketIds = await this.redisService.getRoomMembers(roomId);
       const activeSocketIds: string[] = [];
+      const participantSocketIds: string[] = [];
 
       for (const socketId of allSocketIds) {
         const socketInfo = await this.redisService.getSocketInfo(socketId);
         if (socketInfo && socketInfo.roomId === roomId) {
           activeSocketIds.push(socketId);
+          // Collect participants (not owner)
+          if (socketInfo.role === 'participant') {
+            participantSocketIds.push(socketId);
+          }
         }
       }
 
@@ -256,6 +272,30 @@ export class RouletteService {
           roomId,
           requestId,
           reason: 'NO_MEMBERS',
+        });
+        return;
+      }
+
+      // Check if all participants are ready
+      let readyParticipants: string[] = [];
+      try {
+        const result = await this.redisService.getReadyParticipants(roomId);
+        readyParticipants = result;
+      } catch (error: unknown) {
+        console.error('Error getting ready participants:', error);
+      }
+      const readySet = new Set<string>(readyParticipants);
+
+      const allParticipantsReady = participantSocketIds.every((socketId) =>
+        readySet.has(socketId),
+      );
+
+      // Only require ready check if there are participants
+      if (participantSocketIds.length > 0 && !allParticipantsReady) {
+        socket.emit('spin:rejected', {
+          roomId,
+          requestId,
+          reason: 'NOT_ALL_READY',
         });
         return;
       }
@@ -349,13 +389,126 @@ export class RouletteService {
     }
   }
 
-  async handleDisconnect(socket: Socket): Promise<void> {
-    const socketInfo = await this.redisService.getSocketInfo(socket.id);
-    if (socketInfo) {
-      const { roomId } = socketInfo;
-      await this.redisService.removeRoomMember(roomId, socket.id);
-      await this.redisService.removeSocketInfo(socket.id);
+  async handleDisconnect(socket: Socket, server: Server): Promise<void> {
+    try {
+      const socketInfo = await this.redisService.getSocketInfo(socket.id);
+      if (socketInfo) {
+        const { roomId, role } = socketInfo;
+
+        // Remove from ready list if applicable
+        await this.redisService.removeParticipantReady(roomId, socket.id);
+
+        // Remove from room members
+        await this.redisService.removeRoomMember(roomId, socket.id);
+        await this.redisService.removeSocketInfo(socket.id);
+
+        // Broadcast updated participants list to owner (if a participant left)
+        if (role === 'participant') {
+          await this.broadcastParticipantsToOwner(roomId, server);
+        }
+      }
+    } catch (error: unknown) {
+      // Log error but don't throw - disconnect should always succeed
+      console.error('Error in handleDisconnect:', error);
     }
+  }
+
+  handleReadyToggle(
+    socket: Socket,
+    data: ReadyToggleDto,
+    server: Server,
+  ): void {
+    const { roomId, ready } = data;
+    const rid = this.getRid(socket);
+
+    if (!rid) {
+      return;
+    }
+
+    // Handle asynchronously without blocking
+    void (async (): Promise<void> => {
+      try {
+        // Get socket info to check role
+        const socketInfo = await this.redisService.getSocketInfo(socket.id);
+        if (!socketInfo) {
+          return;
+        }
+
+        // Only participants can toggle ready state (not owner)
+        if (socketInfo.role !== 'participant') {
+          socket.emit('ready:toggle:rejected', {
+            roomId,
+            reason: 'ONLY_PARTICIPANTS_CAN_READY',
+          });
+          return;
+        }
+
+        // Update ready state in Redis
+        if (ready) {
+          await this.redisService.setParticipantReady(roomId, socket.id);
+        } else {
+          await this.redisService.removeParticipantReady(roomId, socket.id);
+        }
+
+        // Broadcast participants list to owner
+        await this.broadcastParticipantsToOwner(roomId, server);
+      } catch (error: unknown) {
+        console.error('Error in handleReadyToggle:', error);
+        socket.emit('ready:toggle:rejected', {
+          roomId,
+          reason: 'INTERNAL_ERROR',
+        });
+      }
+    })();
+  }
+
+  handleNicknameChange(
+    socket: Socket,
+    data: NicknameChangeDto,
+    server: Server,
+  ): void {
+    const { roomId, nickname } = data;
+    const rid = this.getRid(socket);
+
+    if (!rid) {
+      return;
+    }
+
+    // Trim and validate nickname
+    const trimmedNickname = nickname.trim();
+    if (!trimmedNickname || trimmedNickname.length > 20) {
+      socket.emit('nickname:change:rejected', {
+        roomId,
+        reason: 'INVALID_NICKNAME',
+      });
+      return;
+    }
+
+    // Handle asynchronously without blocking
+    void (async (): Promise<void> => {
+      try {
+        // Update nickname in Redis
+        await this.redisService.updateSocketNickname(
+          socket.id,
+          trimmedNickname,
+        );
+
+        // Confirm to the user
+        socket.emit('nickname:changed', {
+          roomId,
+          nickname: trimmedNickname,
+        });
+
+        // Broadcast participants list to owner
+        await this.broadcastParticipantsToOwner(roomId, server);
+      } catch (error: unknown) {
+        console.error('Error in handleNicknameChange:', error);
+        socket.emit('nickname:change:rejected', {
+          roomId,
+          reason: 'INTERNAL_ERROR',
+        });
+      }
+    })();
   }
 
   private selectRandom<T>(array: T[], count: number): T[] {
@@ -365,5 +518,76 @@ export class RouletteService {
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     return shuffled.slice(0, count);
+  }
+
+  private async broadcastParticipantsToOwner(
+    roomId: string,
+    server: Server,
+  ): Promise<void> {
+    // Get owner rid
+    const ownerRid = await this.redisService.getRoomOwner(roomId);
+    if (!ownerRid) {
+      return;
+    }
+
+    // Get all room members
+    const allSocketIds = await this.redisService.getRoomMembers(roomId);
+    let readyParticipants: string[] = [];
+    try {
+      const result = await this.redisService.getReadyParticipants(roomId);
+      readyParticipants = result;
+    } catch (error: unknown) {
+      console.error('Error getting ready participants:', error);
+    }
+    const readySet = new Set<string>(readyParticipants);
+
+    // Collect participant info (excluding owner)
+    const participants: Array<{
+      rid: string;
+      nickname: string;
+      ready: boolean;
+    }> = [];
+
+    let ownerSocketId: string | null = null;
+
+    for (const socketId of allSocketIds) {
+      const socketInfo = await this.redisService.getSocketInfo(socketId);
+      if (!socketInfo) {
+        continue;
+      }
+
+      // Check if this is the owner
+      if (socketInfo.rid === ownerRid) {
+        ownerSocketId = socketId;
+        continue;
+      }
+
+      // Only include participants
+      if (socketInfo.role === 'participant') {
+        participants.push({
+          rid: socketInfo.rid,
+          nickname: socketInfo.nickname,
+          ready: readySet.has(socketId),
+        });
+      }
+    }
+
+    // Send to owner only
+    if (ownerSocketId) {
+      const ownerSocket = server.sockets.sockets.get(ownerSocketId);
+      if (ownerSocket) {
+        const readyCount = participants.filter((p) => p.ready).length;
+        const allReady =
+          participants.length > 0 && readyCount === participants.length;
+
+        ownerSocket.emit('room:participants', {
+          roomId,
+          participants,
+          readyCount,
+          totalCount: participants.length,
+          allReady,
+        });
+      }
+    }
   }
 }

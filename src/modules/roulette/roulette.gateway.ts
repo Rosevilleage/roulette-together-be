@@ -14,6 +14,8 @@ import type Redis from 'ioredis';
 import type { RoomJoinDto } from './dto/room-join.dto';
 import type { RoomConfigSetDto } from './dto/room-config-set.dto';
 import type { SpinRequestDto } from './dto/spin-request.dto';
+import type { ReadyToggleDto } from './dto/ready-toggle.dto';
+import type { NicknameChangeDto } from './dto/nickname-change.dto';
 import { RedisService } from '../../common/redis/redis.service';
 import { RouletteService } from './roulette.service';
 
@@ -88,7 +90,7 @@ export class RouletteGateway
   }
 
   handleDisconnect(socket: Socket): void {
-    this.rouletteService.handleDisconnect(socket);
+    this.rouletteService.handleDisconnect(socket, this.server);
   }
 
   @SubscribeMessage('room:join')
@@ -96,7 +98,7 @@ export class RouletteGateway
     @ConnectedSocket() socket: Socket,
     data: RoomJoinDto,
   ): Promise<void> {
-    await this.rouletteService.handleRoomJoin(socket, data);
+    await this.rouletteService.handleRoomJoin(socket, data, this.server);
   }
 
   @SubscribeMessage('room:config:set')
@@ -113,5 +115,21 @@ export class RouletteGateway
     data: SpinRequestDto,
   ): Promise<void> {
     await this.rouletteService.handleSpinRequest(socket, data, this.server);
+  }
+
+  @SubscribeMessage('participant:ready:toggle')
+  handleReadyToggle(
+    @ConnectedSocket() socket: Socket,
+    data: ReadyToggleDto,
+  ): void {
+    void this.rouletteService.handleReadyToggle(socket, data, this.server);
+  }
+
+  @SubscribeMessage('participant:nickname:change')
+  handleNicknameChange(
+    @ConnectedSocket() socket: Socket,
+    data: NicknameChangeDto,
+  ): void {
+    void this.rouletteService.handleNicknameChange(socket, data, this.server);
   }
 }

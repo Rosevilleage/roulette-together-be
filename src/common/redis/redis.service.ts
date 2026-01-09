@@ -240,4 +240,33 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     );
     return count;
   }
+
+  // Participant ready status
+  async setParticipantReady(roomId: string, socketId: string): Promise<void> {
+    await this.client.sadd(`room:ready:${roomId}`, socketId);
+  }
+
+  async removeParticipantReady(
+    roomId: string,
+    socketId: string,
+  ): Promise<void> {
+    await this.client.srem(`room:ready:${roomId}`, socketId);
+  }
+
+  async getReadyParticipants(roomId: string): Promise<string[]> {
+    const members = await this.client.smembers(`room:ready:${roomId}`);
+    return members;
+  }
+
+  // Update socket nickname
+  async updateSocketNickname(
+    socketId: string,
+    nickname: string,
+  ): Promise<void> {
+    const socketInfo = await this.getSocketInfo(socketId);
+    if (socketInfo) {
+      socketInfo.nickname = nickname;
+      await this.setSocketInfo(socketId, socketInfo);
+    }
+  }
 }

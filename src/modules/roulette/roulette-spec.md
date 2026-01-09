@@ -19,7 +19,9 @@ roulette/
     ├── create-room-response.dto.ts    # 방 생성 응답
     ├── room-join.dto.ts               # 방 입장 요청
     ├── room-config-set.dto.ts         # 방 설정 변경 요청
-    └── spin-request.dto.ts            # 룰렛 회전 요청
+    ├── spin-request.dto.ts            # 룰렛 회전 요청
+    ├── ready-toggle.dto.ts            # 준비 상태 토글 요청
+    └── nickname-change.dto.ts         # 닉네임 변경 요청
 ```
 
 ### 의존성
@@ -83,11 +85,13 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 #### WebSocket 이벤트 핸들러
 
-| 이벤트 명         | 설명                         | DTO                |
-| ----------------- | ---------------------------- | ------------------ |
-| `room:join`       | 방 입장 요청                 | `RoomJoinDto`      |
-| `room:config:set` | 방 설정 변경 (방장만 가능)   | `RoomConfigSetDto` |
-| `spin:request`    | 룰렛 회전 요청 (방장만 가능) | `SpinRequestDto`   |
+| 이벤트 명                     | 설명                         | DTO                 |
+| ----------------------------- | ---------------------------- | ------------------- |
+| `room:join`                   | 방 입장 요청                 | `RoomJoinDto`       |
+| `room:config:set`             | 방 설정 변경 (방장만 가능)   | `RoomConfigSetDto`  |
+| `spin:request`                | 룰렛 회전 요청 (방장만 가능) | `SpinRequestDto`    |
+| `participant:ready:toggle`    | 참가자 준비 상태 토글        | `ReadyToggleDto`    |
+| `participant:nickname:change` | 참가자 닉네임 변경           | `NicknameChangeDto` |
 
 ---
 
@@ -162,13 +166,14 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 2. 멱등성(Idempotency) 체크 (`requestId` 기반, 30초 TTL)
 3. 분산 락 획득 (`lock:spin:{roomId}`, 10초 TTL)
 4. 활성 멤버 조회 (Redis에서 소켓 정보 검증)
-5. 승자 선택 (Fisher-Yates 셔플 알고리즘)
-6. 이벤트 브로드캐스트:
+5. **준비 상태 검증**: 모든 참가자(방장 제외)가 준비 완료 상태인지 확인
+6. 승자 선택 (Fisher-Yates 셔플 알고리즘)
+7. 이벤트 브로드캐스트:
    - `spin:resolved`: 전체 방에 룰렛 시작 알림 (애니메이션 정보 포함)
    - `spin:outcome`: 각 참가자에게 개별 결과 (WIN/LOSE)
    - `spin:result`: 전체 방에 결과 요약 (닉네임 포함)
-7. 방 상태 업데이트 (마지막 스핀 정보)
-8. 분산 락 해제
+8. 방 상태 업데이트 (마지막 스핀 정보)
+9. 분산 락 해제
 
 **타이밍**:
 
@@ -183,20 +188,79 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 - `ALREADY_SPINNING`: 이미 스핀 진행 중
 - `NO_MEMBERS`: 참가자 없음
 - `ROOM_NOT_FOUND`: 방 설정 없음
+- `NOT_ALL_READY`: 모든 참가자가 준비 완료 상태가 아님
 
 **분산 락**: Lua 스크립트로 안전한 락 해제 (spinId 일치 시에만)
 
 ---
 
-##### `handleDisconnect(socket)`
+##### `handleReadyToggle(socket, data, server)`
+
+**기능**: 참가자의 준비 상태 토글
+
+**처리 흐름**:
+
+1. `rid` 검증
+2. 소켓 정보 조회 및 역할 확인
+3. 참가자만 가능 (방장은 준비 상태 변경 불가)
+4. Redis에 준비 상태 저장/삭제
+5. 방장에게 참가자 리스트 브로드캐스트 (`room:participants`)
+
+**실패 시 응답**: `ready:toggle:rejected`
+
+- `ONLY_PARTICIPANTS_CAN_READY`: 방장은 준비 상태를 변경할 수 없음
+
+---
+
+##### `handleNicknameChange(socket, data, server)`
+
+**기능**: 참가자의 닉네임 변경
+
+**처리 흐름**:
+
+1. `rid` 검증
+2. 닉네임 유효성 검증 (1-20자)
+3. Redis 소켓 정보 업데이트
+4. 사용자에게 확인 응답 (`nickname:changed`)
+5. 방장에게 참가자 리스트 브로드캐스트 (`room:participants`)
+
+**실패 시 응답**: `nickname:change:rejected`
+
+- `INVALID_NICKNAME`: 닉네임이 비어있거나 너무 김
+
+---
+
+##### `broadcastParticipantsToOwner(roomId, server)` (private)
+
+**기능**: 방장에게 참가자 리스트 전송
+
+**처리 흐름**:
+
+1. 방장 rid 조회
+2. 방의 모든 멤버 및 준비 상태 조회
+3. 참가자 정보 수집 (방장 제외)
+4. 방장 소켓에게만 `room:participants` 이벤트 전송
+
+**전송 시점**:
+
+- 참가자가 방에 입장할 때
+- 참가자가 준비 상태를 변경할 때
+- 참가자가 닉네임을 변경할 때
+- 참가자가 방을 나갈 때
+
+---
+
+##### `handleDisconnect(socket, server)`
 
 **기능**: 연결 종료 시 정리 작업
 
 **처리 흐름**:
 
 1. 소켓 정보 조회
-2. 방 멤버에서 제거
-3. 소켓 정보 삭제
+2. 준비 상태 목록에서 제거
+3. 방 멤버에서 제거
+4. 소켓 정보 삭제
+5. 참가자가 나간 경우 방장에게 참가자 리스트 브로드캐스트
 
 ---
 
@@ -254,6 +318,24 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 }
 ```
 
+#### ReadyToggleDto
+
+```typescript
+{
+  roomId: string; // 방 ID
+  ready: boolean; // true = 준비 완료, false = 준비 해제
+}
+```
+
+#### NicknameChangeDto
+
+```typescript
+{
+  roomId: string; // 방 ID
+  nickname: string; // 새로운 닉네임 (1-20자)
+}
+```
+
 ---
 
 ### Redis 데이터 구조
@@ -267,6 +349,7 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 | `room:members:{roomId}`             | Set           | 방 멤버 소켓 ID 목록            | 무제한 |
 | `room:socket:{socketId}`            | String (JSON) | 소켓 정보 (nickname, role 포함) | 2시간  |
 | `room:state:{roomId}`               | String (JSON) | 방 상태 (마지막 스핀)           | 2시간  |
+| `room:ready:{roomId}`               | Set           | 준비 완료한 참가자 소켓 ID 목록 | 무제한 |
 | `lock:spin:{roomId}`                | String        | 스핀 분산 락                    | 10초   |
 | `idem:spin:{roomId}:{requestId}`    | String        | 멱등성 키                       | 30초   |
 
@@ -375,6 +458,57 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
   "roomId": "room-123",
   "requestId": "550e8400-e29b-41d4-a716-446655440000",
   "reason": "NOT_OWNER" // 또는 다른 실패 사유
+}
+```
+
+---
+
+#### `participant:ready:toggle`
+
+**요청**:
+
+```json
+{
+  "roomId": "room-123",
+  "ready": true
+}
+```
+
+**성공 응답**: 방장에게 `room:participants` 이벤트 전송
+
+**실패 응답**: `ready:toggle:rejected`
+
+```json
+{
+  "roomId": "room-123",
+  "reason": "ONLY_PARTICIPANTS_CAN_READY"
+}
+```
+
+---
+
+#### `participant:nickname:change`
+
+**요청**:
+
+```json
+{
+  "roomId": "room-123",
+  "nickname": "새로운닉네임"
+}
+```
+
+**성공 응답**:
+
+- 개인에게 `nickname:changed` 이벤트
+- 방장에게 `room:participants` 이벤트 전송
+
+**실패 응답**: `nickname:change:rejected`
+
+```json
+{
+  "roomId": "room-123",
+  "reason": "INVALID_NICKNAME"
 }
 ```
 
@@ -499,13 +633,62 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ---
 
+#### `room:participants`
+
+참가자 리스트 (방장에게만 전송)
+
+```json
+{
+  "roomId": "room-123",
+  "participants": [
+    {
+      "rid": "abc123def456...",
+      "nickname": "플레이어1",
+      "ready": true
+    },
+    {
+      "rid": "xyz789uvw012...",
+      "nickname": "참가자 2",
+      "ready": false
+    }
+  ],
+  "readyCount": 1,
+  "totalCount": 2,
+  "allReady": false
+}
+```
+
+**전송 시점**:
+
+- 참가자가 방에 입장할 때
+- 참가자가 준비 상태를 변경할 때
+- 참가자가 닉네임을 변경할 때
+- 참가자가 방을 나갈 때
+
+---
+
+#### `nickname:changed`
+
+닉네임 변경 확인 (개인에게만 전송)
+
+```json
+{
+  "roomId": "room-123",
+  "nickname": "새로운닉네임"
+}
+```
+
+---
+
 ## 에러 처리
 
 ### 요청 거부 사유
 
 - **방 입장**: roomId/role 누락, rid 없음, 이미 방장 존재
 - **설정 변경**: 방장 아님, winnersCount < 1
-- **스핀 요청**: 방장 아님, 중복 요청, 이미 스핀 중, 참가자 없음, 방 없음
+- **스핀 요청**: 방장 아님, 중복 요청, 이미 스핀 중, 참가자 없음, 방 없음, 모든 참가자가 준비되지 않음
+- **준비 상태 토글**: 방장은 준비 상태 변경 불가
+- **닉네임 변경**: 닉네임이 비어있거나 너무 김 (1-20자)
 
 ---
 
@@ -584,12 +767,38 @@ HTTP API로 방 생성 → 토큰 발급 → WebSocket 연결 시 rid 자동 생
 
 ---
 
+## 주요 변경사항 (v2.1)
+
+### ✅ 완료된 기능
+
+- [x] 참가자 준비 상태 시스템 (`participant:ready:toggle`)
+- [x] 닉네임 변경 기능 (`participant:nickname:change`)
+- [x] 방장에게 참가자 리스트 실시간 전송 (`room:participants`)
+- [x] 모든 참가자가 준비 완료되어야 룰렛 시작 가능
+- [x] 준비 상태는 룰렛 회전 후에도 유지
+
+### 플로우 변경
+
+**이전 (v2.0)**:
+
+```
+방 입장 → 룰렛 회전 가능
+```
+
+**현재 (v2.1)**:
+
+```
+방 입장 → 참가자 준비 완료 → 모든 참가자 준비 시 룰렛 회전 가능
+         ↓
+      닉네임 변경 가능
+```
+
+---
+
 ## 향후 개선 사항
 
 - [ ] 방 목록 조회 API
 - [ ] 방 삭제/종료 기능
 - [ ] 재연결 시 상태 복구
 - [ ] 스핀 히스토리 저장 및 조회
-- [ ] 방 참가자 목록 실시간 조회
 - [ ] 방장 위임 기능
-- [ ] 닉네임 변경 기능
