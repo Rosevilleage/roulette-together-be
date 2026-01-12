@@ -226,6 +226,10 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  async getRoomOwnerToken(roomId: string): Promise<string | null> {
+    return await this.client.get(`room:owner:token:${roomId}`);
+  }
+
   async verifyRoomOwnerToken(roomId: string, token: string): Promise<boolean> {
     const storedToken = await this.client.get(`room:owner:token:${roomId}`);
     return storedToken === token;

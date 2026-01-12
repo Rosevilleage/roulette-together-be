@@ -361,7 +361,7 @@ SET idem:spin:{roomId}:{requestId} {spinId} EX 30
 
 ##### `setRoomOwnerToken(roomId: string, token: string): Promise<void>`
 
-**기능**: 방장 인증 토큰 저장
+**기능**: 방장 인증 토큰 저장 (HTTP-only 쿠키와 함께 사용)
 
 **Redis 명령**:
 
@@ -373,13 +373,34 @@ SET room:owner:token:{roomId} {token} EX 7200
 
 **TTL**: 2시간
 
-**용도**: HTTP API로 방 생성 시 발급된 토큰 저장
+**용도**: HTTP API로 방 생성 시 발급된 토큰 저장. 동시에 HTTP-only 쿠키로도 클라이언트에 전송됨.
+
+---
+
+##### `getRoomOwnerToken(roomId: string): Promise<string | null>`
+
+**기능**: 저장된 방장 인증 토큰 조회 (쿠키 검증용)
+
+**Redis 명령**:
+
+```
+GET room:owner:token:{roomId}
+```
+
+**Redis 키**: `room:owner:token:{roomId}`
+
+**반환**:
+
+- `string`: 저장된 토큰
+- `null`: 토큰 없음 (만료되었거나 존재하지 않는 방)
+
+**용도**: WebSocket 연결 시 클라이언트 쿠키의 토큰과 비교하여 방장 인증
 
 ---
 
 ##### `verifyRoomOwnerToken(roomId: string, token: string): Promise<boolean>`
 
-**기능**: 방장 토큰 검증
+**기능**: 방장 토큰 검증 (레거시 메서드, getRoomOwnerToken 사용 권장)
 
 **반환**:
 
@@ -722,7 +743,7 @@ redis://:password123@redis.example.com:6380/0
 
 ### ✅ 추가된 기능
 
-- [x] 방장 토큰 관리 (`setRoomOwnerToken`, `verifyRoomOwnerToken`)
+- [x] 방장 토큰 관리 (`setRoomOwnerToken`, `getRoomOwnerToken`, `verifyRoomOwnerToken`)
 - [x] 방장 초기 닉네임 관리 (`setInitialOwnerNickname`, `getInitialOwnerNickname`, `removeInitialOwnerNickname`)
 - [x] 참가자 카운터 (`getNextParticipantNumber`)
 - [x] 참가자 준비 상태 관리 (`setParticipantReady`, `removeParticipantReady`, `getReadyParticipants`)

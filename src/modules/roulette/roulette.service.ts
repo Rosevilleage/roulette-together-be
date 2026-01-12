@@ -40,7 +40,12 @@ export class RouletteService {
     data: RoomJoinDto,
     server: Server,
   ): Promise<void> {
+    console.log('[room:join] Received data:', JSON.stringify(data, null, 2));
+    console.log('[room:join] Data type:', typeof data);
+    console.log('[room:join] roomId:', data?.roomId, 'role:', data?.role);
+
     if (!data?.roomId || !data?.role) {
+      console.log('[room:join] REJECTED: Missing roomId or role');
       socket.emit('room:join:rejected', {
         reason: 'INVALID_REQUEST',
       });
@@ -50,11 +55,58 @@ export class RouletteService {
     const { roomId, role } = data;
     const rid = this.getRid(socket);
 
+    console.log('[room:join] Generated rid:', rid);
+
     if (!rid) {
+      console.log('[room:join] REJECTED: No rid found');
       socket.emit('room:join:rejected', {
         reason: 'INVALID_RID',
       });
       return;
+    }
+
+    // Verify owner token from cookie if role is owner
+    if (role === 'owner') {
+      const cookies = socket.handshake.headers.cookie;
+      console.log('[room:join] Owner role - cookies:', cookies);
+      let ownerTokenFromCookie: string | undefined;
+
+      if (cookies) {
+        // Parse cookies manually (cookie-parser doesn't work with Socket.IO)
+        const cookieObj: Record<string, string> = {};
+        cookies.split(';').forEach((cookie) => {
+          const [key, value] = cookie.trim().split('=');
+          if (key && value) {
+            cookieObj[key] = decodeURIComponent(value);
+          }
+        });
+        console.log('[room:join] Parsed cookies:', cookieObj);
+        ownerTokenFromCookie = cookieObj[`owner_token_${roomId}`];
+        console.log(
+          '[room:join] Owner token from cookie:',
+          ownerTokenFromCookie,
+        );
+      }
+
+      if (!ownerTokenFromCookie) {
+        console.log('[room:join] REJECTED: Missing owner token in cookie');
+        socket.emit('room:join:rejected', {
+          reason: 'MISSING_OWNER_TOKEN',
+        });
+        return;
+      }
+
+      // Verify token against Redis
+      const storedToken = await this.redisService.getRoomOwnerToken(roomId);
+      console.log('[room:join] Stored token from Redis:', storedToken);
+      if (!storedToken || storedToken !== ownerTokenFromCookie) {
+        console.log('[room:join] REJECTED: Token mismatch');
+        socket.emit('room:join:rejected', {
+          reason: 'INVALID_OWNER_TOKEN',
+        });
+        return;
+      }
+      console.log('[room:join] Owner token verified successfully');
     }
 
     // Determine nickname

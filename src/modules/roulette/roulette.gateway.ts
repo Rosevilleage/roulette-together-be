@@ -6,6 +6,7 @@ import {
   OnGatewayInit,
   SubscribeMessage,
   ConnectedSocket,
+  MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
@@ -96,7 +97,7 @@ export class RouletteGateway
   @SubscribeMessage('room:join')
   async handleRoomJoin(
     @ConnectedSocket() socket: Socket,
-    data: RoomJoinDto,
+    @MessageBody() data: RoomJoinDto,
   ): Promise<void> {
     await this.rouletteService.handleRoomJoin(socket, data, this.server);
   }
@@ -104,7 +105,7 @@ export class RouletteGateway
   @SubscribeMessage('room:config:set')
   async handleRoomConfigSet(
     @ConnectedSocket() socket: Socket,
-    data: RoomConfigSetDto,
+    @MessageBody() data: RoomConfigSetDto,
   ): Promise<void> {
     await this.rouletteService.handleRoomConfigSet(socket, data, this.server);
   }
@@ -112,7 +113,7 @@ export class RouletteGateway
   @SubscribeMessage('spin:request')
   async handleSpinRequest(
     @ConnectedSocket() socket: Socket,
-    data: SpinRequestDto,
+    @MessageBody() data: SpinRequestDto,
   ): Promise<void> {
     await this.rouletteService.handleSpinRequest(socket, data, this.server);
   }
@@ -120,7 +121,7 @@ export class RouletteGateway
   @SubscribeMessage('participant:ready:toggle')
   handleReadyToggle(
     @ConnectedSocket() socket: Socket,
-    data: ReadyToggleDto,
+    @MessageBody() data: ReadyToggleDto,
   ): void {
     void this.rouletteService.handleReadyToggle(socket, data, this.server);
   }
@@ -128,7 +129,7 @@ export class RouletteGateway
   @SubscribeMessage('participant:nickname:change')
   handleNicknameChange(
     @ConnectedSocket() socket: Socket,
-    data: NicknameChangeDto,
+    @MessageBody() data: NicknameChangeDto,
   ): void {
     void this.rouletteService.handleNicknameChange(socket, data, this.server);
   }

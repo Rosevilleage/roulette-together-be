@@ -19,7 +19,7 @@ async function bootstrap(): Promise<void> {
   );
   setupSwagger(app);
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || '*',
+    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
     credentials: true,
   });
   await app.listen(process.env.PORT ?? 8080);

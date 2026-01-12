@@ -30,16 +30,18 @@ POST /rooms API 호출
   ↓
 응답 수신:
   - roomId
-  - ownerToken
   - ownerUrl (방장용 링크)
   - participantUrl (참가자용 링크)
+  - ownerToken은 HTTP-only 쿠키로 자동 저장됨 (owner_token_{roomId})
   ↓
 방 입장 화면으로 이동
-  - 쿼리 파라미터: roomId, role=owner, token=ownerToken
+  - 쿼리 파라미터: roomId, role=owner
+  - 쿠키가 자동으로 포함되어 방장 인증
   ↓
-WebSocket 연결 + room:join 이벤트 전송
+WebSocket 연결 (credentials: true) + room:join 이벤트 전송
   - { roomId, role: 'owner' }
   - nickname 생략 시 방 생성 시 지정한 닉네임 사용
+  - 서버가 쿠키를 통해 방장 권한 자동 검증
   ↓
 room:joined 이벤트 수신
   - isOwner: true
@@ -144,11 +146,13 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
       "winSentiment": "POSITIVE" // 선택, 기본값 "POSITIVE"
     }
     ```
-  - Response: `{ roomId, ownerToken, ownerUrl, participantUrl, createdAt }`
+  - Response: `{ roomId, ownerUrl, participantUrl, createdAt }`
+  - ownerToken은 HTTP-only 쿠키로 자동 설정됨 (보안 강화)
 
 **라우팅:**
 
-- 방 생성 성공 시 → `/room/:roomId?role=owner&token=:ownerToken`
+- 방 생성 성공 시 → `/room/:roomId?role=owner`
+- 쿠키가 자동으로 포함되어 방장 인증 처리
 
 ---
 
@@ -230,9 +234,17 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 
   ```json
   {
-    "reason": "OWNER_ALREADY_EXISTS" | "INVALID_REQUEST" | "INVALID_RID"
+    "reason": "OWNER_ALREADY_EXISTS" | "INVALID_REQUEST" | "INVALID_RID" | "MISSING_OWNER_TOKEN" | "INVALID_OWNER_TOKEN"
   }
   ```
+
+  **Rejection Reasons:**
+
+  - `MISSING_OWNER_TOKEN`: 방장 역할인데 쿠키가 없음 (WebSocket 연결 시 `withCredentials: true` 필요)
+  - `INVALID_OWNER_TOKEN`: 쿠키의 토큰이 Redis에 저장된 토큰과 불일치
+  - `OWNER_ALREADY_EXISTS`: 이미 다른 방장이 존재함
+  - `INVALID_REQUEST`: 필수 파라미터 누락
+  - `INVALID_RID`: 서버에서 생성한 rid가 없음
 
 - `room:participants` - 참가자 리스트 (방장에게만 전송)
 
@@ -491,6 +503,7 @@ export const useSocket = (): Socket | null => {
       process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001',
       {
         transports: ['websocket'],
+        withCredentials: true, // IMPORTANT: 쿠키 전송을 위해 필수
       },
     );
 
@@ -517,7 +530,7 @@ interface RoomStore {
   roomId: string | null;
   role: 'owner' | 'participant' | null;
   isOwner: boolean;
-  ownerToken: string | null;
+  // ownerToken은 HTTP-only 쿠키로 관리되므로 상태에서 제거됨
 
   // 사용자 정보
   myNickname: string | null;
@@ -633,9 +646,9 @@ interface RoomStore {
 
 ### HTTP API
 
-| Method | Endpoint | Description | Request Body                                                                                                                      | Response                                                      |
-| ------ | -------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| POST   | `/rooms` | 방 생성     | `{ nickname?: string, winnersCount?: number, winSentiment?: 'POSITIVE'\|'NEGATIVE' }` (미입력 시 기본값: "생성자", 1, "POSITIVE") | `{ roomId, ownerToken, ownerUrl, participantUrl, createdAt }` |
+| Method | Endpoint | Description | Request Body                                                                                                                      | Response                                                           | Notes                                                                    |
+| ------ | -------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| POST   | `/rooms` | 방 생성     | `{ nickname?: string, winnersCount?: number, winSentiment?: 'POSITIVE'\|'NEGATIVE' }` (미입력 시 기본값: "생성자", 1, "POSITIVE") | `{ roomId, ownerUrl, participantUrl, createdAt }`                  | ownerToken은 `owner_token_{roomId}` HTTP-only 쿠키로 자동 설정 (2시간) |
 
 ### WebSocket 이벤트
 
@@ -677,6 +690,49 @@ NEXT_PUBLIC_API_URL=http://localhost:3001
 NEXT_PUBLIC_WS_URL=http://localhost:3001
 NEXT_PUBLIC_FRONTEND_URL=http://localhost:3000
 ```
+
+---
+
+## 보안 고려사항
+
+### 쿠키 기반 인증
+
+백엔드가 HTTP-only 쿠키로 방장 인증을 처리하므로, 프론트엔드에서는 다음 사항을 준수해야 합니다:
+
+1. **HTTP API 호출 시 쿠키 전송**
+
+   ```typescript
+   // fetch 사용 시
+   fetch('http://localhost:3001/rooms', {
+     method: 'POST',
+     credentials: 'include', // 쿠키 전송 필수
+     headers: {
+       'Content-Type': 'application/json',
+     },
+     body: JSON.stringify({ nickname, winnersCount, winSentiment }),
+   });
+
+   // axios 사용 시
+   axios.post(
+     'http://localhost:3001/rooms',
+     { nickname, winnersCount, winSentiment },
+     { withCredentials: true }, // 쿠키 전송 필수
+   );
+   ```
+
+2. **Socket.IO 연결 시 쿠키 전송**
+
+   ```typescript
+   const socket = io('http://localhost:3001', {
+     transports: ['websocket'],
+     withCredentials: true, // 쿠키 전송 필수 (방장 인증용)
+   });
+   ```
+
+3. **보안 이점**
+   - **XSS 방지**: HTTP-only 쿠키는 JavaScript에서 접근 불가능하여 XSS 공격으로부터 보호
+   - **자동 관리**: 브라우저가 쿠키를 자동으로 관리하여 개발자 실수 방지
+   - **CSRF 보호**: SameSite=Lax 설정으로 CSRF 공격 완화
 
 ---
 
