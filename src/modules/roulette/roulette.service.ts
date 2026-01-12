@@ -6,6 +6,7 @@ import { RoomConfigSetDto } from './dto/room-config-set.dto';
 import { SpinRequestDto } from './dto/spin-request.dto';
 import { ReadyToggleDto } from './dto/ready-toggle.dto';
 import { NicknameChangeDto } from './dto/nickname-change.dto';
+import { RoomLeaveDto } from './dto/room-leave.dto';
 import { RedisService } from 'src/common/redis/redis.service';
 
 interface SocketWithData extends Socket {
@@ -81,7 +82,19 @@ export class RouletteService {
           }
         });
         console.log('[room:join] Parsed cookies:', cookieObj);
-        ownerTokenFromCookie = cookieObj[`owner_token_${roomId}`];
+        const cookieValue = cookieObj[`owner_token_${roomId}`];
+
+        // Parse cookie value (may contain {roomId, token} or just token for backward compatibility)
+        if (cookieValue) {
+          try {
+            const parsed = JSON.parse(cookieValue);
+            ownerTokenFromCookie = parsed.token;
+          } catch {
+            // Old format (plain token) - still support for backward compatibility
+            ownerTokenFromCookie = cookieValue;
+          }
+        }
+
         console.log(
           '[room:join] Owner token from cookie:',
           ownerTokenFromCookie,
@@ -141,22 +154,35 @@ export class RouletteService {
       }
     }
 
-    // Verify owner token if role is owner
+    // Handle owner role
     if (role === 'owner') {
-      // For owner role, we need a token from query params
-      // This should be validated in gateway before joining
-      const ownerRid = await this.redisService.getRoomOwner(roomId);
+      // Token has already been verified at this point (lines 70-123)
+      // Check if owner has an active connection
+      const hasActiveOwner =
+        await this.redisService.hasActiveOwnerConnection(roomId);
 
-      // If room already has owner and this rid is not the owner, reject
-      if (ownerRid && ownerRid !== rid) {
+      if (hasActiveOwner) {
+        // Another socket is already connected as owner with the same token
         socket.emit('room:join:rejected', {
           reason: 'OWNER_ALREADY_EXISTS',
         });
         return;
       }
 
-      // Set as owner if not already set
-      if (!ownerRid) {
+      // Owner reconnecting or first connection - update owner rid
+      // This allows owner to reconnect after disconnect with the same token
+      const ownerRid = await this.redisService.getRoomOwner(roomId);
+      if (ownerRid && ownerRid !== rid) {
+        // Owner is reconnecting with a new socket (new rid)
+        // Update the owner rid to the new one
+        await this.redisService.getClient().set(
+          `room:owner:${roomId}`,
+          rid,
+          'EX',
+          Math.floor((1000 * 60 * 30) / 1000), // 30 minutes
+        );
+      } else if (!ownerRid) {
+        // First time owner connection
         await this.redisService.setRoomOwner(roomId, rid);
       }
     }
@@ -222,6 +248,9 @@ export class RouletteService {
     if (role === 'participant') {
       await this.broadcastParticipantsToOwner(roomId, server);
     }
+
+    // Update room activity timestamp
+    await this.redisService.setRoomLastActivity(roomId);
   }
 
   async handleRoomConfigSet(
@@ -268,6 +297,9 @@ export class RouletteService {
       roomId,
       ...config,
     });
+
+    // Update room activity timestamp
+    await this.redisService.setRoomLastActivity(roomId);
   }
 
   async handleSpinRequest(
@@ -451,6 +483,9 @@ export class RouletteService {
         })),
       });
 
+      // Update room activity timestamp
+      await this.redisService.setRoomLastActivity(roomId);
+
       // Update room state
       await this.redisService.setRoomState(roomId, {
         lastSpin: {
@@ -477,8 +512,16 @@ export class RouletteService {
         await this.redisService.removeRoomMember(roomId, socket.id);
         await this.redisService.removeSocketInfo(socket.id);
 
-        // Broadcast updated participants list to owner (if a participant left)
-        if (role === 'participant') {
+        // Handle based on role
+        if (role === 'owner') {
+          // Owner disconnected - extend room TTL to 30 minutes
+          // This allows owner to reconnect within 30 minutes
+          console.log(
+            `[handleDisconnect] Owner disconnected from room ${roomId}, extending TTL to 30 minutes`,
+          );
+          await this.redisService.extendRoomTTL(roomId);
+        } else {
+          // Participant left - broadcast updated participants list to owner
           await this.broadcastParticipantsToOwner(roomId, server);
         }
       }
@@ -527,6 +570,9 @@ export class RouletteService {
 
         // Broadcast participants list to owner
         await this.broadcastParticipantsToOwner(roomId, server);
+
+        // Update room activity timestamp
+        await this.redisService.setRoomLastActivity(roomId);
       } catch (error: unknown) {
         console.error('Error in handleReadyToggle:', error);
         socket.emit('ready:toggle:rejected', {
@@ -576,6 +622,9 @@ export class RouletteService {
 
         // Broadcast participants list to owner
         await this.broadcastParticipantsToOwner(roomId, server);
+
+        // Update room activity timestamp
+        await this.redisService.setRoomLastActivity(roomId);
       } catch (error: unknown) {
         console.error('Error in handleNicknameChange:', error);
         socket.emit('nickname:change:rejected', {
@@ -584,6 +633,122 @@ export class RouletteService {
         });
       }
     })();
+  }
+
+  async handleRoomLeave(
+    socket: Socket,
+    data: RoomLeaveDto,
+    server: Server,
+  ): Promise<void> {
+    const { roomId } = data;
+    const rid = this.getRid(socket);
+    const role = this.getRole(socket);
+
+    if (!rid || !role) {
+      socket.emit('room:leave:rejected', {
+        roomId,
+        reason: 'INVALID_REQUEST',
+      });
+      return;
+    }
+
+    // Get socket info to verify room membership
+    const socketInfo = await this.redisService.getSocketInfo(socket.id);
+    if (!socketInfo || socketInfo.roomId !== roomId) {
+      socket.emit('room:leave:rejected', {
+        roomId,
+        reason: 'NOT_IN_ROOM',
+      });
+      return;
+    }
+
+    if (role === 'owner') {
+      // Owner exit: Delete entire room and disconnect all participants
+      await this.handleOwnerExit(roomId, socket, server);
+    } else {
+      // Participant exit: Just disconnect (existing logic handles cleanup)
+      await this.handleParticipantExit(roomId, socket, server);
+    }
+  }
+
+  private async handleOwnerExit(
+    roomId: string,
+    socket: Socket,
+    server: Server,
+  ): Promise<void> {
+    try {
+      // Get all members before deletion
+      const allSocketIds = await this.redisService.getRoomMembers(roomId);
+
+      // Notify all participants that room is closing
+      server.to(roomId).emit('room:closed', {
+        roomId,
+        reason: 'OWNER_LEFT',
+        closedAt: Date.now(),
+      });
+
+      // Force disconnect all sockets in room (except owner)
+      for (const socketId of allSocketIds) {
+        if (socketId === socket.id) continue; // Skip owner socket
+
+        const participantSocket = server.sockets.sockets.get(socketId);
+        if (participantSocket) {
+          // Disconnect participant socket
+          participantSocket.disconnect(true);
+        }
+
+        // Clean up socket info
+        await this.redisService.removeSocketInfo(socketId);
+      }
+
+      // Delete entire room from Redis
+      await this.redisService.deleteRoom(roomId);
+
+      // Clean up owner socket info
+      await this.redisService.removeSocketInfo(socket.id);
+
+      // Confirm to owner
+      socket.emit('room:left', {
+        roomId,
+        leftAt: Date.now(),
+      });
+
+      // Leave socket.io room
+      await socket.leave(roomId);
+    } catch (error: unknown) {
+      console.error('Error in handleOwnerExit:', error);
+      socket.emit('room:leave:rejected', {
+        roomId,
+        reason: 'INTERNAL_ERROR',
+      });
+    }
+  }
+
+  private async handleParticipantExit(
+    roomId: string,
+    socket: Socket,
+    server: Server,
+  ): Promise<void> {
+    try {
+      // Confirm to participant first
+      socket.emit('room:left', {
+        roomId,
+        leftAt: Date.now(),
+      });
+
+      // Trigger disconnect which handles all cleanup
+      // This reuses existing handleDisconnect logic
+      await this.handleDisconnect(socket, server);
+
+      // Leave socket.io room
+      await socket.leave(roomId);
+    } catch (error: unknown) {
+      console.error('Error in handleParticipantExit:', error);
+      socket.emit('room:leave:rejected', {
+        roomId,
+        reason: 'INTERNAL_ERROR',
+      });
+    }
   }
 
   private selectRandom<T>(array: T[], count: number): T[] {

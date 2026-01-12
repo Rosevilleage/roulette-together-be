@@ -14,6 +14,7 @@
 ```
 메인 화면
   ↓
+(선택) 방 제목 입력
 (선택) 닉네임 입력
 (선택) 룰렛 설정 입력
   - winnersCount: 당첨자 수 (기본값: 1)
@@ -23,6 +24,7 @@
   ↓
 POST /rooms API 호출
   - {
+      title?: string,
       nickname?: string,
       winnersCount?: number,
       winSentiment?: 'POSITIVE' | 'NEGATIVE'
@@ -30,9 +32,10 @@ POST /rooms API 호출
   ↓
 응답 수신:
   - roomId
+  - title (방 제목, 기본값: "룰렛 방")
   - ownerUrl (방장용 링크)
   - participantUrl (참가자용 링크)
-  - ownerToken은 HTTP-only 쿠키로 자동 저장됨 (owner_token_{roomId})
+  - ownerToken은 HTTP-only 쿠키로 자동 저장됨 (owner_token_{roomId}, JSON 형식: {roomId, token})
   ↓
 방 입장 화면으로 이동
   - 쿼리 파라미터: roomId, role=owner
@@ -124,16 +127,20 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 **기능:**
 
 - 방 만들기 버튼
-- (선택) 최근 참여한 방 목록
+- 내가 만든 활성 방 목록 (v2.2)
 
 **UI 요소:**
 
 - 타이틀: "룰렛 투게더"
 - 버튼: "방 만들기"
-- (선택) 닉네임 입력 필드
+- (선택) 방 제목 입력 필드 (최대 50자, 기본값: "룰렛 방")
+- (선택) 닉네임 입력 필드 (최대 20자)
 - (선택) 룰렛 설정 입력
   - 당첨자 수 (winnersCount): 숫자 입력, 기본값 1
   - 당첨 감정 (winSentiment): POSITIVE(당첨=좋음) / NEGATIVE(당첨=나쁨) 선택, 기본값 POSITIVE
+- 내가 만든 방 목록 (v2.2)
+  - 방 제목, 참가자 수, 당첨자 수, 감정, 마지막 활동 시간
+  - 클릭 시 해당 방으로 입장
 
 **API 호출:**
 
@@ -141,18 +148,41 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   - Request body:
     ```json
     {
-      "nickname": "방장닉네임", // 선택, 미입력 시 "생성자"
+      "title": "점심 메뉴 정하기", // 선택, 미입력 시 "룰렛 방", 최대 50자
+      "nickname": "방장닉네임", // 선택, 미입력 시 "생성자", 최대 20자
       "winnersCount": 3, // 선택, 기본값 1
       "winSentiment": "POSITIVE" // 선택, 기본값 "POSITIVE"
     }
     ```
-  - Response: `{ roomId, ownerUrl, participantUrl, createdAt }`
-  - ownerToken은 HTTP-only 쿠키로 자동 설정됨 (보안 강화)
+  - Response: `{ roomId, title, ownerUrl, participantUrl, createdAt }`
+  - ownerToken은 HTTP-only 쿠키로 자동 설정됨 (보안 강화, JSON 형식: {roomId, token})
+
+- `GET /rooms` - 내가 만든 활성 방 목록 조회 (v2.2)
+  - Request: 쿠키 (`owner_token_*`)를 자동으로 포함
+  - Response:
+    ```json
+    {
+      "rooms": [
+        {
+          "roomId": "room-abc123",
+          "title": "점심 메뉴 정하기",
+          "participantCount": 3,
+          "winnersCount": 2,
+          "winSentiment": "POSITIVE",
+          "lastActivity": 1673456789000,
+          "ownerNickname": "방장닉네임"
+        }
+      ],
+      "queriedAt": 1673456789000
+    }
+    ```
+  - **자동 쿠키 정리**: 비활성 방(Redis에서 만료됨)이나 토큰이 일치하지 않는 쿠키는 서버에서 자동으로 삭제됨
 
 **라우팅:**
 
 - 방 생성 성공 시 → `/room/:roomId?role=owner`
 - 쿠키가 자동으로 포함되어 방장 인증 처리
+- 방 목록에서 방 클릭 시 → `/room/:roomId?role=owner` (v2.2)
 
 ---
 
@@ -171,6 +201,9 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 - 방장 전용: 룰렛 설정, 스핀 버튼, 참가자 준비 상태 확인
 - 참가자: 닉네임 변경, 준비 완료 버튼
 - 링크 공유 기능 (방장만)
+- 방 나가기 버튼 (v2.2)
+  - 참가자: 방 나가기 (연결 종료)
+  - 방장: 방 삭제 (모든 참가자 강제 퇴장)
 
 **WebSocket 이벤트:**
 
@@ -196,10 +229,18 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   ```
 
 - `participant:nickname:change` - 닉네임 변경
+
   ```json
   {
     "roomId": "room-abc123",
     "nickname": "새로운닉네임"
+  }
+  ```
+
+- `room:leave` - 방 나가기 (v2.2)
+  ```json
+  {
+    "roomId": "room-abc123"
   }
   ```
 
@@ -239,7 +280,6 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   ```
 
   **Rejection Reasons:**
-
   - `MISSING_OWNER_TOKEN`: 방장 역할인데 쿠키가 없음 (WebSocket 연결 시 `withCredentials: true` 필요)
   - `INVALID_OWNER_TOKEN`: 쿠키의 토큰이 Redis에 저장된 토큰과 불일치
   - `OWNER_ALREADY_EXISTS`: 이미 다른 방장이 존재함
@@ -294,12 +334,46 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   ```
 
 - `ready:toggle:rejected` - 준비 상태 변경 거부
+
   ```json
   {
     "roomId": "room-abc123",
     "reason": "ONLY_PARTICIPANTS_CAN_READY"
   }
   ```
+
+- `room:left` - 방 나가기 성공 (v2.2)
+
+  ```json
+  {
+    "roomId": "room-abc123",
+    "leftAt": 1673456789000
+  }
+  ```
+
+- `room:leave:rejected` - 방 나가기 거부 (v2.2)
+
+  ```json
+  {
+    "roomId": "room-abc123",
+    "reason": "INVALID_REQUEST" | "NOT_IN_ROOM" | "INTERNAL_ERROR"
+  }
+  ```
+
+- `room:closed` - 방 삭제됨 (방장이 나갔을 때, v2.2)
+
+  ```json
+  {
+    "roomId": "room-abc123",
+    "reason": "OWNER_LEFT",
+    "closedAt": 1673456789000
+  }
+  ```
+
+  **설명:**
+  - 방장이 `room:leave`를 요청하면 모든 참가자에게 이 이벤트가 브로드캐스트됨
+  - 참가자는 이 이벤트를 받으면 자동으로 메인 화면으로 이동하거나 알림 표시
+  - 그 후 서버가 모든 참가자의 WebSocket 연결을 강제 종료함
 
 ---
 
@@ -640,15 +714,49 @@ interface RoomStore {
 - 준비 완료 상태에서는 [준비 취소] 버튼으로 변경
 - 준비 상태는 룰렛을 돌린 후에도 유지됨
 
+### 8. 방 나가기 및 삭제 처리 (v2.2 신규)
+
+**방 나가기 버튼:**
+
+- 모든 화면에 [방 나가기] 버튼 표시 (상단 헤더 또는 설정 메뉴)
+- 클릭 시 확인 다이얼로그 표시
+  - 참가자: "방을 나가시겠습니까?"
+  - 방장: "방을 삭제하시겠습니까? 모든 참가자가 강제 퇴장됩니다."
+
+**참가자 나가기:**
+
+1. `room:leave` 이벤트 전송
+2. `room:left` 이벤트 수신 시 메인 화면으로 이동
+3. WebSocket 연결 종료
+
+**방장 나가기 (방 삭제):**
+
+1. `room:leave` 이벤트 전송
+2. `room:left` 이벤트 수신 시 메인 화면으로 이동
+3. 방 삭제 완료 메시지 표시
+
+**참가자의 방 삭제 알림 처리:**
+
+1. `room:closed` 이벤트 수신 (reason: "OWNER_LEFT")
+2. 모달/토스트로 "방장이 방을 나가 방이 삭제되었습니다" 알림 표시
+3. 3초 후 자동으로 메인 화면으로 이동
+4. WebSocket 연결은 서버에서 자동으로 끊김
+
+**에러 처리:**
+
+- `room:leave:rejected` 수신 시 에러 메시지 표시
+- 네트워크 오류 시 재시도 옵션 제공
+
 ---
 
 ## API 엔드포인트
 
 ### HTTP API
 
-| Method | Endpoint | Description | Request Body                                                                                                                      | Response                                                           | Notes                                                                    |
-| ------ | -------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| POST   | `/rooms` | 방 생성     | `{ nickname?: string, winnersCount?: number, winSentiment?: 'POSITIVE'\|'NEGATIVE' }` (미입력 시 기본값: "생성자", 1, "POSITIVE") | `{ roomId, ownerUrl, participantUrl, createdAt }`                  | ownerToken은 `owner_token_{roomId}` HTTP-only 쿠키로 자동 설정 (2시간) |
+| Method | Endpoint | Description              | Request Body                                                                                                                      | Response                                                                                                        | Notes                                                                  |
+| ------ | -------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| POST   | `/rooms` | 방 생성                  | `{ nickname?: string, winnersCount?: number, winSentiment?: 'POSITIVE'\|'NEGATIVE' }` (미입력 시 기본값: "생성자", 1, "POSITIVE") | `{ roomId, ownerUrl, participantUrl, createdAt }`                                                               | ownerToken은 `owner_token_{roomId}` HTTP-only 쿠키로 자동 설정 (2시간) |
+| GET    | `/rooms` | 내가 만든 방 목록 (v2.2) | 없음 (쿠키 자동 포함)                                                                                                             | `{ rooms: [{ roomId, participantCount, winnersCount, winSentiment, lastActivity, ownerNickname }], queriedAt }` | 쿠키의 모든 `owner_token_*`를 파싱하여 활성 방 목록 반환               |
 
 ### WebSocket 이벤트
 
@@ -661,6 +769,7 @@ interface RoomStore {
 | `spin:request`                | `{ roomId, requestId }`                  | 룰렛 스핀 요청 (방장만) |
 | `participant:ready:toggle`    | `{ roomId, ready }`                      | 준비 상태 토글 (v2.1)   |
 | `participant:nickname:change` | `{ roomId, nickname }`                   | 닉네임 변경 (v2.1)      |
+| `room:leave`                  | `{ roomId }`                             | 방 나가기 (v2.2)        |
 
 #### Server → Client
 
@@ -675,6 +784,9 @@ interface RoomStore {
 | `nickname:changed`         | `{ roomId, nickname }`                                                            | 닉네임 변경 확인 (v2.1)    | 본인      |
 | `nickname:change:rejected` | `{ roomId, reason }`                                                              | 닉네임 변경 거부 (v2.1)    | 본인      |
 | `ready:toggle:rejected`    | `{ roomId, reason }`                                                              | 준비 상태 변경 거부 (v2.1) | 본인      |
+| `room:left`                | `{ roomId, leftAt }`                                                              | 방 나가기 성공 (v2.2)      | 본인      |
+| `room:leave:rejected`      | `{ roomId, reason }`                                                              | 방 나가기 거부 (v2.2)      | 본인      |
+| `room:closed`              | `{ roomId, reason, closedAt }`                                                    | 방 삭제됨 (v2.2)           | 방 전체   |
 | `spin:resolved`            | `{ roomId, requestId, spinId, winnersCount, winSentiment, decidedAt, animation }` | 스핀 시작                  | 방 전체   |
 | `spin:outcome`             | `{ roomId, spinId, outcome, winSentiment }`                                       | 개인 결과                  | 본인      |
 | `spin:result`              | `{ roomId, spinId, outcomes }`                                                    | 전체 결과                  | 방 전체   |
@@ -709,13 +821,13 @@ NEXT_PUBLIC_FRONTEND_URL=http://localhost:3000
      headers: {
        'Content-Type': 'application/json',
      },
-     body: JSON.stringify({ nickname, winnersCount, winSentiment }),
+     body: JSON.stringify({ title, nickname, winnersCount, winSentiment }),
    });
 
    // axios 사용 시
    axios.post(
      'http://localhost:3001/rooms',
-     { nickname, winnersCount, winSentiment },
+     { title, nickname, winnersCount, winSentiment },
      { withCredentials: true }, // 쿠키 전송 필수
    );
    ```
@@ -733,6 +845,8 @@ NEXT_PUBLIC_FRONTEND_URL=http://localhost:3000
    - **XSS 방지**: HTTP-only 쿠키는 JavaScript에서 접근 불가능하여 XSS 공격으로부터 보호
    - **자동 관리**: 브라우저가 쿠키를 자동으로 관리하여 개발자 실수 방지
    - **CSRF 보호**: SameSite=Lax 설정으로 CSRF 공격 완화
+   - **자동 정리**: `GET /rooms` 호출 시 비활성 방의 쿠키가 서버에서 자동으로 삭제되어 불필요한 쿠키 누적 방지
+   - **쿠키 구조**: v2.3부터 쿠키 값이 JSON 형식 `{roomId, token}`으로 저장되어 방 ID와 토큰을 함께 관리 (하위 호환성 유지)
 
 ---
 
@@ -913,15 +1027,51 @@ http://localhost:3001/api-docs
 
 이 프로젝트는 다음과 같은 핵심 기능을 구현합니다:
 
-1. **방 생성**: HTTP API로 방 생성 및 방장/참가자 링크 발급
-2. **방 입장**: WebSocket 연결 및 역할(방장/참가자) 구분
-3. **닉네임 관리**: 입력하지 않으면 자동 생성 ('참가자 N'), 입장 후 변경 가능 (v2.1)
-4. **준비 상태 시스템**: 모든 참가자가 준비 완료해야 룰렛 시작 (v2.1)
-5. **참가자 관리**: 방장에게 실시간 참가자 목록 및 준비 상태 표시 (v2.1)
-6. **룰렛 스핀**: 방장이 스핀 요청, 모든 참가자에게 결과 전달
-7. **결과 표시**: 변경된 닉네임과 함께 당첨/낙첨 결과 표시
+1. **방 생성**: HTTP API로 방 생성 (제목 포함) 및 방장/참가자 링크 발급
+2. **방 목록 조회**: 사용자가 만든 활성 방 목록 조회 (제목 포함, v2.2)
+3. **방 입장**: WebSocket 연결 및 역할(방장/참가자) 구분
+4. **닉네임 관리**: 입력하지 않으면 자동 생성 ('참가자 N'), 입장 후 변경 가능 (v2.1)
+5. **준비 상태 시스템**: 모든 참가자가 준비 완료해야 룰렛 시작 (v2.1)
+6. **참가자 관리**: 방장에게 실시간 참가자 목록 및 준비 상태 표시 (v2.1)
+7. **룰렛 스핀**: 방장이 스핀 요청, 모든 참가자에게 결과 전달
+8. **결과 표시**: 변경된 닉네임과 함께 당첨/낙첨 결과 표시
+9. **방 나가기**: 참가자는 방 나가기, 방장은 방 삭제 (v2.2)
 
-**백엔드는 이미 구현 완료**되었으므로 (v2.1 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+**백엔드는 이미 구현 완료**되었으므로 (v2.4 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+
+### v2.4 주요 업데이트 (2026-01-12)
+
+- ✅ 방장 재연결 지원
+  - 방장이 탭을 닫았다가 다시 방에 입장 가능 (30분 이내)
+  - 토큰 검증으로 같은 방장인지 확인
+  - 활성 소켓 연결이 없으면 재입장 허용
+  - 방장 연결 끊김 시 방 데이터 TTL을 30분으로 단축
+- ✅ TTL 최적화
+  - 방 데이터 TTL: 30분 (방장 재연결 허용 시간)
+  - 소켓 활성 TTL: 2시간 (활성 연결 유지 시간)
+
+### v2.3 주요 업데이트 (2026-01-12)
+
+- ✅ 방 제목 기능 추가
+  - 방 생성 시 제목 입력 가능 (최대 50자, 기본값: "룰렛 방")
+  - Redis에 `room:title:{roomId}` 키로 저장
+  - `GET /rooms` 응답에 제목 포함
+  - `POST /rooms` 응답에 제목 포함
+- ✅ 쿠키 구조 변경
+  - 쿠키 값이 JSON 형식 `{roomId, token}`으로 저장
+  - roomId와 토큰을 함께 관리하여 방 정보 추적 용이
+  - 하위 호환성 유지 (이전 평문 토큰 형식도 지원)
+
+### v2.2 주요 업데이트 (2026-01-12)
+
+- ✅ 방 목록 조회 API 추가 (`GET /rooms`)
+- ✅ 내가 만든 활성 방 목록 조회 기능
+- ✅ 방 마지막 활동 시간 추적 (`lastActivity`)
+- ✅ 방 나가기 기능 (`room:leave` 이벤트)
+- ✅ 참가자 나가기: 깔끔한 연결 종료
+- ✅ 방장 나가기: 방 완전 삭제 + 모든 참가자 강제 퇴장
+- ✅ `room:closed` 이벤트로 참가자에게 방 삭제 알림
+- ✅ 비활성 방 쿠키 자동 삭제: `GET /rooms` 호출 시 만료된 방의 쿠키 자동 정리
 
 ### v2.1 주요 업데이트 (2025-01-09)
 

@@ -28,7 +28,11 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private client: Redis;
   private subscriber: Redis;
   private publisher: Redis;
-  private readonly ttl = 1000 * 60 * 60 * 2; // 2 hours
+
+  // TTL constants
+  private readonly ROOM_DATA_TTL = 1000 * 60 * 30; // 30 minutes (for room data when owner disconnects)
+  private readonly SOCKET_DATA_TTL = 1000 * 60 * 60 * 2; // 2 hours (for active socket connections)
+  private readonly ttl = this.SOCKET_DATA_TTL; // backward compatibility
 
   async onModuleInit(): Promise<void> {
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
@@ -293,5 +297,95 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async removeInitialOwnerNickname(roomId: string): Promise<void> {
     await this.client.del(`room:owner:initial-nickname:${roomId}`);
+  }
+
+  // Room title
+  async setRoomTitle(roomId: string, title: string): Promise<void> {
+    await this.client.set(
+      `room:title:${roomId}`,
+      title,
+      'EX',
+      Math.floor(this.ttl / 1000),
+    );
+  }
+
+  async getRoomTitle(roomId: string): Promise<string | null> {
+    return this.client.get(`room:title:${roomId}`);
+  }
+
+  async removeRoomTitle(roomId: string): Promise<void> {
+    await this.client.del(`room:title:${roomId}`);
+  }
+
+  // Room last activity tracking
+  async setRoomLastActivity(roomId: string): Promise<void> {
+    const timestamp = Date.now();
+    await this.client.set(
+      `room:lastActivity:${roomId}`,
+      timestamp.toString(),
+      'EX',
+      Math.floor(this.ttl / 1000),
+    );
+  }
+
+  async getRoomLastActivity(roomId: string): Promise<number | null> {
+    const timestamp = await this.client.get(`room:lastActivity:${roomId}`);
+    return timestamp ? parseInt(timestamp, 10) : null;
+  }
+
+  // Full room deletion (owner exit)
+  async deleteRoom(roomId: string): Promise<void> {
+    const pipeline = this.client.pipeline();
+
+    // Delete all room-related keys
+    pipeline.del(`room:config:${roomId}`);
+    pipeline.del(`room:owner:${roomId}`);
+    pipeline.del(`room:owner:token:${roomId}`);
+    pipeline.del(`room:owner:initial-nickname:${roomId}`);
+    pipeline.del(`room:title:${roomId}`);
+    pipeline.del(`room:participant:counter:${roomId}`);
+    pipeline.del(`room:members:${roomId}`);
+    pipeline.del(`room:ready:${roomId}`);
+    pipeline.del(`room:state:${roomId}`);
+    pipeline.del(`room:lastActivity:${roomId}`);
+    pipeline.del(`lock:spin:${roomId}`);
+
+    await pipeline.exec();
+  }
+
+  // Extend room TTL to 30 minutes (when owner disconnects)
+  async extendRoomTTL(roomId: string): Promise<void> {
+    const ttlSeconds = Math.floor(this.ROOM_DATA_TTL / 1000);
+    const pipeline = this.client.pipeline();
+
+    // Extend TTL for all room-related keys
+    pipeline.expire(`room:config:${roomId}`, ttlSeconds);
+    pipeline.expire(`room:owner:${roomId}`, ttlSeconds);
+    pipeline.expire(`room:owner:token:${roomId}`, ttlSeconds);
+    pipeline.expire(`room:title:${roomId}`, ttlSeconds);
+    pipeline.expire(`room:participant:counter:${roomId}`, ttlSeconds);
+    pipeline.expire(`room:state:${roomId}`, ttlSeconds);
+    pipeline.expire(`room:lastActivity:${roomId}`, ttlSeconds);
+
+    await pipeline.exec();
+  }
+
+  // Check if owner has an active socket connection
+  async hasActiveOwnerConnection(roomId: string): Promise<boolean> {
+    const ownerRid = await this.getRoomOwner(roomId);
+    if (!ownerRid) {
+      return false;
+    }
+
+    // Get all members and check if any of them is the owner
+    const members = await this.getRoomMembers(roomId);
+    for (const socketId of members) {
+      const socketInfo = await this.getSocketInfo(socketId);
+      if (socketInfo && socketInfo.rid === ownerRid) {
+        return true;
+      }
+    }
+
+    return false;
   }
 }

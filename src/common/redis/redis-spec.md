@@ -454,6 +454,49 @@ DEL room:owner:initial-nickname:{roomId}
 
 ---
 
+##### `setRoomTitle(roomId: string, title: string): Promise<void>`
+
+**기능**: 방 제목 저장
+
+**Redis 명령**:
+
+```
+SET room:title:{roomId} {title} EX 7200
+```
+
+**Redis 키**: `room:title:{roomId}`
+
+**TTL**: 2시간
+
+**용도**: 방 생성 시 지정한 방 제목을 저장하여 방 목록 조회 시 표시
+
+---
+
+##### `getRoomTitle(roomId: string): Promise<string | null>`
+
+**기능**: 방 제목 조회
+
+**반환**:
+
+- 저장된 방 제목 문자열
+- `null`: 저장된 제목이 없음
+
+---
+
+##### `removeRoomTitle(roomId: string): Promise<void>`
+
+**기능**: 방 제목 삭제
+
+**Redis 명령**:
+
+```
+DEL room:title:{roomId}
+```
+
+**용도**: 방 삭제 시 제목도 함께 삭제
+
+---
+
 #### 참가자 카운터 관리
 
 ##### `getNextParticipantNumber(roomId: string): Promise<number>`
@@ -596,6 +639,7 @@ interface SocketInfo {
 | `room:owner:{roomId}`                  | String        | 방장 rid                        | 2시간  |
 | `room:owner:token:{roomId}`            | String        | 방장 인증 토큰                  | 2시간  |
 | `room:owner:initial-nickname:{roomId}` | String        | 방장 초기 닉네임 (방 생성 시)   | 2시간  |
+| `room:title:{roomId}`                  | String        | 방 제목                         | 2시간  |
 | `room:participant:counter:{roomId}`    | Number        | 참가자 번호 카운터              | 2시간  |
 | `room:members:{roomId}`                | Set           | 방 멤버 소켓 ID 목록            | 없음\* |
 | `room:socket:{socketId}`               | String (JSON) | 소켓 정보 (nickname, role 포함) | 2시간  |
@@ -673,7 +717,8 @@ redis://:password123@redis.example.com:6380/0
 
 - **짧은 TTL** (30초): 멱등성 키 (단기 중복 방지)
 - **중간 TTL** (10초): 분산 락 (스핀 진행 시간)
-- **긴 TTL** (2시간): 방 데이터 (사용자 활동 시간)
+- **방 재연결 TTL** (30분): 방장 연결 끊김 시 방 데이터 유지 시간
+- **소켓 활성 TTL** (2시간): 활성 소켓 연결 시 방 데이터 유지 시간
 
 ### 데이터 타입 선택
 
@@ -739,9 +784,33 @@ redis://:password123@redis.example.com:6380/0
 
 ---
 
-## 주요 변경사항 (v2.0)
+## 주요 변경사항
 
-### ✅ 추가된 기능
+### v2.4 (2026-01-12) - 방장 재연결 지원
+
+#### ✅ 추가된 기능
+
+- [x] 방장 재연결 메커니즘 (`hasActiveOwnerConnection`, `extendRoomTTL`)
+- [x] TTL 상수 분리 (방 데이터 30분, 소켓 데이터 2시간)
+- [x] 방장 연결 끊김 시 자동 TTL 연장
+
+#### 변경 사항
+
+**방장 재입장 로직**:
+- 이전: 방장이 이미 있으면 무조건 거부 (`OWNER_ALREADY_EXISTS`)
+- 현재: 토큰 검증 후 활성 소켓 연결이 없으면 재입장 허용
+
+**방장 disconnect 처리**:
+- 이전: 방장 연결 끊김 시 아무 처리 없음 (2시간 TTL 유지)
+- 현재: 방장 연결 끊김 시 모든 방 데이터 TTL을 30분으로 단축
+
+**주요 메서드**:
+- `hasActiveOwnerConnection(roomId)`: 방장이 현재 소켓 연결을 가지고 있는지 확인
+- `extendRoomTTL(roomId)`: 모든 방 관련 키의 TTL을 30분으로 설정
+
+### v2.0 - 기본 기능
+
+#### ✅ 추가된 기능
 
 - [x] 방장 토큰 관리 (`setRoomOwnerToken`, `getRoomOwnerToken`, `verifyRoomOwnerToken`)
 - [x] 방장 초기 닉네임 관리 (`setInitialOwnerNickname`, `getInitialOwnerNickname`, `removeInitialOwnerNickname`)

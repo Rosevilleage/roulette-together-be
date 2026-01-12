@@ -17,6 +17,7 @@ import type { RoomConfigSetDto } from './dto/room-config-set.dto';
 import type { SpinRequestDto } from './dto/spin-request.dto';
 import type { ReadyToggleDto } from './dto/ready-toggle.dto';
 import type { NicknameChangeDto } from './dto/nickname-change.dto';
+import type { RoomLeaveDto } from './dto/room-leave.dto';
 import { RedisService } from '../../common/redis/redis.service';
 import { RouletteService } from './roulette.service';
 
@@ -132,5 +133,13 @@ export class RouletteGateway
     @MessageBody() data: NicknameChangeDto,
   ): void {
     void this.rouletteService.handleNicknameChange(socket, data, this.server);
+  }
+
+  @SubscribeMessage('room:leave')
+  async handleRoomLeave(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: RoomLeaveDto,
+  ): Promise<void> {
+    await this.rouletteService.handleRoomLeave(socket, data, this.server);
   }
 }
