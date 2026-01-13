@@ -130,6 +130,10 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return result === 'OK';
   }
 
+  async clearRoomOwner(roomId: string): Promise<void> {
+    await this.client.del(`room:owner:${roomId}`);
+  }
+
   // Room members
   async addRoomMember(roomId: string, socketId: string): Promise<void> {
     await this.client.sadd(`room:members:${roomId}`, socketId);

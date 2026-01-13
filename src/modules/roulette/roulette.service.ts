@@ -193,6 +193,10 @@ export class RouletteService {
     // Add to Redis members set
     await this.redisService.addRoomMember(roomId, socket.id);
 
+    // Store role and nickname in socket.data for later use
+    (socket as SocketWithData).data.role = role as 'owner' | 'participant';
+    (socket as SocketWithData).data.nickname = nickname;
+
     // Store socket info with nickname and role
     await this.redisService.setSocketInfo(socket.id, {
       roomId,
@@ -677,35 +681,20 @@ export class RouletteService {
     server: Server,
   ): Promise<void> {
     try {
-      // Get all members before deletion
-      const allSocketIds = await this.redisService.getRoomMembers(roomId);
-
-      // Notify all participants that room is closing
-      server.to(roomId).emit('room:closed', {
+      // Notify all participants that owner has left (but room is still active)
+      server.to(roomId).emit('room:owner:left', {
         roomId,
-        reason: 'OWNER_LEFT',
-        closedAt: Date.now(),
+        leftAt: Date.now(),
       });
 
-      // Force disconnect all sockets in room (except owner)
-      for (const socketId of allSocketIds) {
-        if (socketId === socket.id) continue; // Skip owner socket
-
-        const participantSocket = server.sockets.sockets.get(socketId);
-        if (participantSocket) {
-          // Disconnect participant socket
-          participantSocket.disconnect(true);
-        }
-
-        // Clean up socket info
-        await this.redisService.removeSocketInfo(socketId);
-      }
-
-      // Delete entire room from Redis
-      await this.redisService.deleteRoom(roomId);
+      // Remove owner from room members
+      await this.redisService.removeRoomMember(roomId, socket.id);
 
       // Clean up owner socket info
       await this.redisService.removeSocketInfo(socket.id);
+
+      // Clear owner rid (allow owner to rejoin later with same token)
+      await this.redisService.clearRoomOwner(roomId);
 
       // Confirm to owner
       socket.emit('room:left', {
@@ -715,6 +704,9 @@ export class RouletteService {
 
       // Leave socket.io room
       await socket.leave(roomId);
+
+      // Extend room TTL to allow owner to rejoin
+      await this.redisService.extendRoomTTL(roomId);
     } catch (error: unknown) {
       console.error('Error in handleOwnerExit:', error);
       socket.emit('room:leave:rejected', {
