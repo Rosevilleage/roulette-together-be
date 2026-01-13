@@ -106,7 +106,7 @@ export class RouletteController {
       // Parse cookie value (now contains {roomId, token})
       let token: string;
       try {
-        const parsed = JSON.parse(cookieValue);
+        const parsed = JSON.parse(cookieValue) as { token: string };
         token = parsed.token;
       } catch {
         // Old format (plain token) - still support for backward compatibility

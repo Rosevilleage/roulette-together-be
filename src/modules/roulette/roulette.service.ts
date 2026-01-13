@@ -87,7 +87,7 @@ export class RouletteService {
         // Parse cookie value (may contain {roomId, token} or just token for backward compatibility)
         if (cookieValue) {
           try {
-            const parsed = JSON.parse(cookieValue);
+            const parsed = JSON.parse(cookieValue) as { token: string };
             ownerTokenFromCookie = parsed.token;
           } catch {
             // Old format (plain token) - still support for backward compatibility
