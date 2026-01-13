@@ -74,16 +74,9 @@ export class RouletteController {
     // Initialize room activity timestamp
     await this.redisService.setRoomLastActivity(roomId);
 
-    // Generate URLs (프론트엔드 URL은 환경변수로 관리)
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const ownerUrl = `${frontendUrl}/room/${roomId}?role=owner`;
-    const participantUrl = `${frontendUrl}/room/${roomId}?role=participant`;
-
     return {
       roomId,
       title: roomTitle,
-      ownerUrl,
-      participantUrl,
       createdAt: Date.now(),
     };
   }

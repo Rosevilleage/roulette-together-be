@@ -55,12 +55,12 @@ HTTP API를 통한 방 생성을 담당하는 컨트롤러입니다.
 ```json
 {
   "roomId": "room-abc123def456",
-  "ownerToken": "token-xyz...",
-  "ownerUrl": "http://localhost:3000/room/room-abc123def456?role=owner&token=token-xyz...",
-  "participantUrl": "http://localhost:3000/room/room-abc123def456?role=participant",
+  "title": "룰렛 방",
   "createdAt": 1704729600000
 }
 ```
+
+**참고**: `ownerToken`은 HTTP-only 쿠키(`owner_token_{roomId}`)로 자동 설정됩니다.
 
 **처리 흐름**:
 
@@ -69,7 +69,7 @@ HTTP API를 통한 방 생성을 담당하는 컨트롤러입니다.
 3. Redis에 토큰 저장 (2시간 TTL)
 4. 방장 초기 닉네임 저장 (미입력 시 "생성자", 2시간 TTL)
 5. 기본 방 설정 초기화
-6. 방장/참가자 URL 생성 및 반환
+6. HTTP-only 쿠키에 ownerToken 저장
 
 ---
 
@@ -283,18 +283,28 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ### DTO
 
-#### CreateRoomDto
+#### CreateRoomDto (Request)
 
 ```typescript
 {
-  nickname?: string;     // 방장 닉네임 (선택)
-  roomId: string;           // 생성된 방 ID
-  ownerToken: string;       // 방장 인증 토큰
-  ownerUrl: string;         // 방장 입장 링크
-  participantUrl: string;   // 참가자 입장 링크
-  createdAt: number;        // 생성 시각 (Unix ms)
+  title?: string;        // 방 제목 (선택, 기본값: "룰렛 방")
+  nickname?: string;     // 방장 닉네임 (선택, 기본값: "생성자")
+  winnersCount?: number; // 당첨자 수 (선택, 기본값: 1)
+  winSentiment?: 'POSITIVE' | 'NEGATIVE'; // 당첨 감정 (선택, 기본값: "POSITIVE")
 }
 ```
+
+#### CreateRoomResponseDto (Response)
+
+```typescript
+{
+  roomId: string;        // 생성된 방 ID
+  title: string;         // 방 제목
+  createdAt: number;     // 생성 시각 (Unix ms)
+}
+```
+
+**참고**: `ownerToken`은 HTTP-only 쿠키(`owner_token_{roomId}`)로 자동 설정됩니다.
 
 #### RoomJoinDto
 
@@ -375,7 +385,10 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ```json
 {
-  "nickname": "플레이어1" // 선택 사항, 미입력 시 "생성자"로 설정됨
+  "title": "점심 메뉴 정하기",  // 선택, 기본값: "룰렛 방"
+  "nickname": "플레이어1",       // 선택, 기본값: "생성자"
+  "winnersCount": 1,            // 선택, 기본값: 1
+  "winSentiment": "POSITIVE"    // 선택, 기본값: "POSITIVE"
 }
 ```
 
@@ -384,12 +397,12 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 ```json
 {
   "roomId": "room-abc123def456",
-  "ownerToken": "token-xyz...",
-  "ownerUrl": "http://localhost:3000/room/room-abc123def456?role=owner&token=token-xyz...",
-  "participantUrl": "http://localhost:3000/room/room-abc123def456?role=participant",
+  "title": "점심 메뉴 정하기",
   "createdAt": 1704729600000
 }
 ```
+
+**참고**: `ownerToken`은 HTTP-only 쿠키(`owner_token_{roomId}`)로 자동 설정됩니다.
 
 ---
 

@@ -33,8 +33,7 @@ POST /rooms API 호출
 응답 수신:
   - roomId
   - title (방 제목, 기본값: "룰렛 방")
-  - ownerUrl (방장용 링크)
-  - participantUrl (참가자용 링크)
+  - createdAt
   - ownerToken은 HTTP-only 쿠키로 자동 저장됨 (owner_token_{roomId}, JSON 형식: {roomId, token})
   ↓
 방 입장 화면으로 이동
@@ -154,8 +153,9 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
       "winSentiment": "POSITIVE" // 선택, 기본값 "POSITIVE"
     }
     ```
-  - Response: `{ roomId, title, ownerUrl, participantUrl, createdAt }`
+  - Response: `{ roomId, title, createdAt }`
   - ownerToken은 HTTP-only 쿠키로 자동 설정됨 (보안 강화, JSON 형식: {roomId, token})
+  - 프론트엔드에서 URL 조합: `/room/${roomId}?role=owner` (방장), `/room/${roomId}?role=participant` (참가자)
 
 - `GET /rooms` - 내가 만든 활성 방 목록 조회 (v2.2)
   - Request: 쿠키 (`owner_token_*`)를 자동으로 포함
@@ -191,8 +191,9 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 **쿼리 파라미터:**
 
 - `role`: 'owner' | 'participant' (필수)
-- `token`: 방장 인증 토큰 (role=owner일 때만)
 - `nickname`: 초기 닉네임 (선택)
+
+**참고**: 방장 인증 토큰은 쿠키로 자동 전송됩니다 (쿼리 파라미터로 전달 불필요)
 
 **기능:**
 
@@ -755,8 +756,8 @@ interface RoomStore {
 
 | Method | Endpoint | Description              | Request Body                                                                                                                      | Response                                                                                                        | Notes                                                                  |
 | ------ | -------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| POST   | `/rooms` | 방 생성                  | `{ nickname?: string, winnersCount?: number, winSentiment?: 'POSITIVE'\|'NEGATIVE' }` (미입력 시 기본값: "생성자", 1, "POSITIVE") | `{ roomId, ownerUrl, participantUrl, createdAt }`                                                               | ownerToken은 `owner_token_{roomId}` HTTP-only 쿠키로 자동 설정 (2시간) |
-| GET    | `/rooms` | 내가 만든 방 목록 (v2.2) | 없음 (쿠키 자동 포함)                                                                                                             | `{ rooms: [{ roomId, participantCount, winnersCount, winSentiment, lastActivity, ownerNickname }], queriedAt }` | 쿠키의 모든 `owner_token_*`를 파싱하여 활성 방 목록 반환               |
+| POST   | `/rooms` | 방 생성                  | `{ title?, nickname?, winnersCount?, winSentiment? }` | `{ roomId, title, createdAt }`                                                               | ownerToken은 HTTP-only 쿠키로 자동 설정. URL은 프론트에서 조합 |
+| GET    | `/rooms` | 내가 만든 방 목록 (v2.2) | 없음 (쿠키 자동 포함)                                                                                                             | `{ rooms: [{ roomId, title, participantCount, winnersCount, winSentiment, lastActivity, ownerNickname }], queriedAt }` | 쿠키의 모든 `owner_token_*`를 파싱하여 활성 방 목록 반환               |
 
 ### WebSocket 이벤트
 
@@ -1027,7 +1028,7 @@ http://localhost:3001/api-docs
 
 이 프로젝트는 다음과 같은 핵심 기능을 구현합니다:
 
-1. **방 생성**: HTTP API로 방 생성 (제목 포함) 및 방장/참가자 링크 발급
+1. **방 생성**: HTTP API로 방 생성 (제목 포함), URL은 프론트에서 조합
 2. **방 목록 조회**: 사용자가 만든 활성 방 목록 조회 (제목 포함, v2.2)
 3. **방 입장**: WebSocket 연결 및 역할(방장/참가자) 구분
 4. **닉네임 관리**: 입력하지 않으면 자동 생성 ('참가자 N'), 입장 후 변경 가능 (v2.1)
@@ -1037,7 +1038,15 @@ http://localhost:3001/api-docs
 8. **결과 표시**: 변경된 닉네임과 함께 당첨/낙첨 결과 표시
 9. **방 나가기**: 참가자는 방 나가기, 방장은 방 삭제 (v2.2)
 
-**백엔드는 이미 구현 완료**되었으므로 (v2.4 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+**백엔드는 이미 구현 완료**되었으므로 (v2.5 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+
+### v2.5 주요 업데이트 (2026-01-13)
+
+- ✅ 방 생성 응답 간소화
+  - `ownerUrl`, `participantUrl` 필드 제거
+  - 응답: `{ roomId, title, createdAt }`만 반환
+  - URL은 프론트엔드에서 조합: `/room/${roomId}?role=owner` 또는 `/room/${roomId}?role=participant`
+  - `FRONTEND_URL` 환경변수 의존성 제거
 
 ### v2.4 주요 업데이트 (2026-01-12)
 
