@@ -221,9 +221,13 @@ export class RouletteService {
       await this.redisService.setRoomConfig(roomId, config);
     }
 
+    // Get room title
+    const title = (await this.redisService.getRoomTitle(roomId)) || '룰렛 방';
+
     // Send room:joined
     socket.emit('room:joined', {
       roomId,
+      title,
       serverTime: Date.now(),
       you: {
         isOwner,
@@ -571,6 +575,12 @@ export class RouletteService {
         } else {
           await this.redisService.removeParticipantReady(roomId, socket.id);
         }
+
+        // Confirm ready state change to the participant
+        socket.emit('ready:toggled', {
+          roomId,
+          ready,
+        });
 
         // Broadcast participants list to owner
         await this.broadcastParticipantsToOwner(roomId, server);
