@@ -252,10 +252,10 @@ export class RouletteService {
       });
     }
 
-    // Broadcast participants list to owner (if a participant joined)
-    if (role === 'participant') {
-      await this.broadcastParticipantsToOwner(roomId, server);
-    }
+    // Broadcast participants list to owner
+    // - If a participant joined: notify owner of new participant
+    // - If owner joined: send current participants list to owner
+    await this.broadcastParticipantsToOwner(roomId, server);
 
     // Update room activity timestamp
     await this.redisService.setRoomLastActivity(roomId);
