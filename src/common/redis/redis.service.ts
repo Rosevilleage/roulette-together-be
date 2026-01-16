@@ -390,9 +390,15 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   // Check if owner has an active socket connection
   async hasActiveOwnerConnection(roomId: string): Promise<boolean> {
+    const socketId = await this.getActiveOwnerSocketId(roomId);
+    return socketId !== null;
+  }
+
+  // Get the active owner's socket ID (if connected)
+  async getActiveOwnerSocketId(roomId: string): Promise<string | null> {
     const ownerRid = await this.getRoomOwner(roomId);
     if (!ownerRid) {
-      return false;
+      return null;
     }
 
     // Get all members and check if any of them is the owner
@@ -400,10 +406,187 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     for (const socketId of members) {
       const socketInfo = await this.getSocketInfo(socketId);
       if (socketInfo && socketInfo.rid === ownerRid) {
-        return true;
+        return socketId;
       }
     }
 
-    return false;
+    return null;
+  }
+
+  /**
+   * 여러 소켓 정보를 한 번에 조회 (배치)
+   */
+  async getSocketInfoBatch(
+    socketIds: string[],
+  ): Promise<Map<string, SocketInfo | null>> {
+    if (socketIds.length === 0) {
+      return new Map();
+    }
+
+    const pipeline = this.client.pipeline();
+    socketIds.forEach((socketId) => {
+      pipeline.get(`room:socket:${socketId}`);
+    });
+
+    const results = await pipeline.exec();
+    const map = new Map<string, SocketInfo | null>();
+
+    socketIds.forEach((socketId, index) => {
+      const result = results?.[index];
+      if (!result) {
+        map.set(socketId, null);
+        return;
+      }
+      const [err, data] = result;
+      if (err || !data) {
+        map.set(socketId, null);
+      } else {
+        map.set(socketId, JSON.parse(data as string) as SocketInfo);
+      }
+    });
+
+    return map;
+  }
+
+  /**
+   * 방 멤버와 정보를 한 번에 조회
+   */
+  async getRoomMembersWithInfo(roomId: string): Promise<SocketInfo[]> {
+    const members = await this.getRoomMembers(roomId);
+    if (members.length === 0) {
+      return [];
+    }
+
+    const infoMap = await this.getSocketInfoBatch(members);
+    return Array.from(infoMap.values()).filter(
+      (info): info is SocketInfo => info !== null,
+    );
+  }
+
+  /**
+   * 여러 방의 config를 한 번에 조회 (배치)
+   */
+  async getRoomConfigBatch(
+    roomIds: string[],
+  ): Promise<Map<string, RoomConfig | null>> {
+    if (roomIds.length === 0) {
+      return new Map();
+    }
+
+    const pipeline = this.client.pipeline();
+    roomIds.forEach((roomId) => {
+      pipeline.get(`room:config:${roomId}`);
+    });
+
+    const results = await pipeline.exec();
+    const map = new Map<string, RoomConfig | null>();
+
+    roomIds.forEach((roomId, index) => {
+      const result = results?.[index];
+      if (!result) {
+        map.set(roomId, null);
+        return;
+      }
+      const [err, data] = result;
+      if (err || !data) {
+        map.set(roomId, null);
+      } else {
+        map.set(roomId, JSON.parse(data as string) as RoomConfig);
+      }
+    });
+
+    return map;
+  }
+
+  /**
+   * 여러 방의 owner token을 한 번에 조회 (배치)
+   */
+  async getRoomOwnerTokenBatch(
+    roomIds: string[],
+  ): Promise<Map<string, string | null>> {
+    if (roomIds.length === 0) {
+      return new Map();
+    }
+
+    const pipeline = this.client.pipeline();
+    roomIds.forEach((roomId) => {
+      pipeline.get(`room:owner:token:${roomId}`);
+    });
+
+    const results = await pipeline.exec();
+    const map = new Map<string, string | null>();
+
+    roomIds.forEach((roomId, index) => {
+      const result = results?.[index];
+      if (!result) {
+        map.set(roomId, null);
+        return;
+      }
+      const [err, data] = result;
+      if (err || !data) {
+        map.set(roomId, null);
+      } else {
+        map.set(roomId, data as string);
+      }
+    });
+
+    return map;
+  }
+
+  /**
+   * 여러 방의 메타데이터를 한 번에 조회 (배치)
+   */
+  async getRoomMetadataBatch(roomIds: string[]): Promise<
+    Map<
+      string,
+      {
+        title: string | null;
+        lastActivity: number | null;
+        ownerRid: string | null;
+        members: string[];
+      }
+    >
+  > {
+    if (roomIds.length === 0) {
+      return new Map();
+    }
+
+    const pipeline = this.client.pipeline();
+    roomIds.forEach((roomId) => {
+      pipeline.get(`room:title:${roomId}`);
+      pipeline.get(`room:lastActivity:${roomId}`);
+      pipeline.get(`room:owner:${roomId}`);
+      pipeline.smembers(`room:members:${roomId}`);
+    });
+
+    const results = await pipeline.exec();
+    const map = new Map<
+      string,
+      {
+        title: string | null;
+        lastActivity: number | null;
+        ownerRid: string | null;
+        members: string[];
+      }
+    >();
+
+    roomIds.forEach((roomId, index) => {
+      const baseIndex = index * 4;
+      const titleResult = results?.[baseIndex];
+      const activityResult = results?.[baseIndex + 1];
+      const ownerResult = results?.[baseIndex + 2];
+      const membersResult = results?.[baseIndex + 3];
+
+      map.set(roomId, {
+        title: titleResult?.[1] as string | null,
+        lastActivity: activityResult?.[1]
+          ? parseInt(activityResult[1] as string, 10)
+          : null,
+        ownerRid: ownerResult?.[1] as string | null,
+        members: (membersResult?.[1] as string[]) || [],
+      });
+    });
+
+    return map;
   }
 }

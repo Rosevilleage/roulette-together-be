@@ -1,4 +1,4 @@
-import { Logger, UseFilters } from '@nestjs/common';
+import { Logger, UseFilters, UseGuards } from '@nestjs/common';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -10,6 +10,7 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { WsAllExceptionsFilter } from '../../common/filters/ws-exception.filter';
+import { WsThrottlerGuard } from '../../common/guards/ws-throttler.guard';
 import { Server, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { randomBytes } from 'crypto';
@@ -30,6 +31,7 @@ import { RouletteService } from './roulette.service';
   },
 })
 @UseFilters(new WsAllExceptionsFilter())
+@UseGuards(WsThrottlerGuard)
 export class RouletteGateway
   implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
 {

@@ -35,6 +35,7 @@ POST /rooms API 호출
   - title (방 제목, 기본값: "룰렛 방")
   - createdAt
   - ownerToken은 HTTP-only 쿠키로 자동 저장됨 (owner_token_{roomId}, JSON 형식: {roomId, token})
+  - ownerRid도 HTTP-only 쿠키로 자동 저장됨 (rid_{roomId}, 재연결 시 동일 브라우저 검증용)
   ↓
 방 입장 화면으로 이동
   - 쿼리 파라미터: roomId, role=owner
@@ -277,14 +278,14 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 
   ```json
   {
-    "reason": "OWNER_ALREADY_EXISTS" | "INVALID_REQUEST" | "INVALID_RID" | "MISSING_OWNER_TOKEN" | "INVALID_OWNER_TOKEN"
+    "reason": "INVALID_REQUEST" | "INVALID_RID" | "MISSING_OWNER_TOKEN" | "INVALID_OWNER_TOKEN" | "INVALID_OWNER_RID"
   }
   ```
 
   **Rejection Reasons:**
   - `MISSING_OWNER_TOKEN`: 방장 역할인데 쿠키가 없음 (WebSocket 연결 시 `withCredentials: true` 필요)
   - `INVALID_OWNER_TOKEN`: 쿠키의 토큰이 Redis에 저장된 토큰과 불일치
-  - `OWNER_ALREADY_EXISTS`: 이미 다른 방장이 존재함
+  - `INVALID_OWNER_RID`: 쿠키의 rid가 저장된 방장 rid와 불일치 (다른 브라우저에서 탈취한 쿠키로 접근 시도)
   - `INVALID_REQUEST`: 필수 파라미터 누락
   - `INVALID_RID`: 서버에서 생성한 rid가 없음
 
@@ -386,6 +387,20 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   - **참가자의 연결은 유지됨** (강제 퇴장 없음)
   - 참가자는 방장이 돌아올 때까지 대기하거나 직접 나갈 수 있음
   - 방장은 30분 이내에 동일한 토큰으로 재입장 가능
+
+- `room:owner:replaced` - 방장 연결이 새 연결로 교체됨 (v2.10)
+
+  ```json
+  {
+    "roomId": "room-abc123",
+    "reason": "NEW_CONNECTION"
+  }
+  ```
+
+  **설명:**
+  - 동일 방장이 새 탭/브라우저에서 재연결했을 때 기존 연결에 전송
+  - 이 이벤트를 받으면 자동으로 연결이 끊김 (서버에서 disconnect 처리)
+  - 프론트엔드에서는 "다른 곳에서 접속하여 연결이 종료되었습니다" 메시지 표시 권장
 
 - `room:closed` - 방 삭제됨 (TTL 만료 또는 명시적 삭제 시)
 
@@ -822,6 +837,7 @@ interface RoomStore {
 | `room:left`                | `{ roomId, leftAt }`                                                              | 방 나가기 성공 (v2.2)      | 본인      |
 | `room:leave:rejected`      | `{ roomId, reason }`                                                              | 방 나가기 거부 (v2.2)      | 본인      |
 | `room:owner:left`          | `{ roomId, leftAt }`                                                              | 방장 나감 (v2.6)           | 방 전체   |
+| `room:owner:replaced`      | `{ roomId, reason }`                                                              | 방장 연결 교체됨 (v2.10)   | 기존 방장 |
 | `room:closed`              | `{ roomId, reason, closedAt }`                                                    | 방 삭제됨 (TTL 만료 등)    | 방 전체   |
 | `spin:resolved`            | `{ roomId, requestId, spinId, winnersCount, winSentiment, decidedAt, animation }` | 스핀 시작                  | 방 전체   |
 | `spin:outcome`             | `{ roomId, spinId, outcome, winSentiment }`                                       | 개인 결과                  | 본인      |
@@ -883,6 +899,7 @@ NEXT_PUBLIC_FRONTEND_URL=http://localhost:3000
    - **CSRF 보호**: SameSite=Lax 설정으로 CSRF 공격 완화
    - **자동 정리**: `GET /rooms` 호출 시 비활성 방의 쿠키가 서버에서 자동으로 삭제되어 불필요한 쿠키 누적 방지
    - **쿠키 구조**: v2.3부터 쿠키 값이 JSON 형식 `{roomId, token}`으로 저장되어 방 ID와 토큰을 함께 관리 (하위 호환성 유지)
+   - **rid 기반 재연결 검증**: v2.10부터 방장의 rid가 별도 쿠키 (`rid_{roomId}`)에 저장되어, 동일 브라우저에서만 재연결 허용 (쿠키 탈취 방지)
 
 ---
 
@@ -1073,7 +1090,21 @@ http://localhost:3001/api-docs
 8. **결과 표시**: 변경된 닉네임과 함께 당첨/낙첨 결과 표시
 9. **방 나가기**: 참가자는 방 나가기, 방장은 일시 퇴장 (참가자 연결 유지, v2.6)
 
-**백엔드는 이미 구현 완료**되었으므로 (v2.9 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+**백엔드는 이미 구현 완료**되었으므로 (v2.10 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+
+### v2.10 주요 업데이트 (2026-01-16)
+
+- ✅ rid 기반 방장 재연결 보안 강화
+  - 방 생성 시 `ownerRid`가 생성되어 `rid_{roomId}` 쿠키에 저장
+  - 방장 재연결 시 쿠키의 rid와 Redis에 저장된 rid 일치 여부 검증
+  - **쿠키 탈취 방지**: 다른 브라우저에서 owner_token만 탈취해도 rid가 다르므로 재연결 불가
+  - 새로운 rejection reason: `INVALID_OWNER_RID` (rid 불일치 시)
+- ✅ 기존 연결이 있는 방장 재연결 시 기존 소켓 연결 해제
+  - 동일 방장이 새 탭/브라우저에서 재연결하면 기존 연결 자동 해제
+  - `room:owner:replaced` 이벤트로 기존 연결에 알림
+- ✅ 쿠키 구조
+  - `owner_token_{roomId}`: JSON 형식 `{roomId, token}` (기존)
+  - `rid_{roomId}`: 방장 rid (신규, HTTP-only)
 
 ### v2.9 주요 업데이트 (2026-01-13)
 

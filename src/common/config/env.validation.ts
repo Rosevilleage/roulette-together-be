@@ -1,4 +1,4 @@
-import { plainToInstance } from 'class-transformer';
+import { plainToInstance, Transform } from 'class-transformer';
 import {
   IsArray,
   IsEnum,
@@ -33,6 +33,18 @@ export class EnvironmentVariables {
   @IsString()
   REDIS_URL: string;
 
+  @Transform(({ value }: { value: unknown }) => {
+    if (typeof value === 'string') {
+      // JSON 배열 형태 또는 단일 문자열 처리
+      try {
+        const parsed: unknown = JSON.parse(value);
+        return Array.isArray(parsed) ? (parsed as string[]) : [value];
+      } catch {
+        return [value];
+      }
+    }
+    return value as string[];
+  })
   @IsArray()
   @IsString({ each: true })
   @IsOptional()

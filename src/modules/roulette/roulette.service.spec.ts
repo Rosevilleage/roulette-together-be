@@ -32,6 +32,26 @@ const createChainableMockServer = () => {
   return { server, emitMock, mockSocketsMap };
 };
 
+/**
+ * Helper to setup batch mock from getSocketInfo mock implementation
+ */
+const setupSocketInfoBatchMock = (
+  mockRedisService: jest.Mocked<RedisService>,
+  socketInfoFn: (
+    socketId: string,
+  ) => ReturnType<typeof createSocketInfo> | null,
+) => {
+  mockRedisService.getSocketInfoBatch.mockImplementation(
+    (socketIds: string[]) => {
+      const map = new Map();
+      for (const socketId of socketIds) {
+        map.set(socketId, socketInfoFn(socketId));
+      }
+      return Promise.resolve(map);
+    },
+  );
+};
+
 describe('RouletteService', () => {
   let service: RouletteService;
   let mockRedisService: jest.Mocked<RedisService>;
@@ -76,26 +96,26 @@ describe('RouletteService', () => {
       );
       mockRedisService.getReadyParticipants.mockResolvedValue(participantIds);
 
-      mockRedisService.getSocketInfo.mockImplementation((socketId: string) => {
+      const socketInfoFn = (socketId: string) => {
         if (socketId === 'owner-socket') {
-          return Promise.resolve(
-            createSocketInfo({
-              rid: 'owner-rid',
-              role: 'owner',
-              nickname: 'Owner',
-              roomId: 'room-1',
-            }),
-          );
-        }
-        return Promise.resolve(
-          createSocketInfo({
-            rid: socketId,
-            role: 'participant',
-            nickname: `User ${socketId}`,
+          return createSocketInfo({
+            rid: 'owner-rid',
+            role: 'owner',
+            nickname: 'Owner',
             roomId: 'room-1',
-          }),
-        );
-      });
+          });
+        }
+        return createSocketInfo({
+          rid: socketId,
+          role: 'participant',
+          nickname: `User ${socketId}`,
+          roomId: 'room-1',
+        });
+      };
+      mockRedisService.getSocketInfo.mockImplementation((socketId: string) =>
+        Promise.resolve(socketInfoFn(socketId)),
+      );
+      setupSocketInfoBatchMock(mockRedisService, socketInfoFn);
 
       allSocketIds.forEach((id) => {
         const mockSocket = createMockSocket({ id });
@@ -152,26 +172,26 @@ describe('RouletteService', () => {
       );
       mockRedisService.getReadyParticipants.mockResolvedValue(participantIds);
 
-      mockRedisService.getSocketInfo.mockImplementation((socketId: string) => {
+      const socketInfoFn = (socketId: string) => {
         if (socketId === 'owner-socket') {
-          return Promise.resolve(
-            createSocketInfo({
-              rid: 'owner-rid',
-              role: 'owner',
-              nickname: 'Owner',
-              roomId: 'room-1',
-            }),
-          );
-        }
-        return Promise.resolve(
-          createSocketInfo({
-            rid: socketId,
-            role: 'participant',
-            nickname: `User ${socketId}`,
+          return createSocketInfo({
+            rid: 'owner-rid',
+            role: 'owner',
+            nickname: 'Owner',
             roomId: 'room-1',
-          }),
-        );
-      });
+          });
+        }
+        return createSocketInfo({
+          rid: socketId,
+          role: 'participant',
+          nickname: `User ${socketId}`,
+          roomId: 'room-1',
+        });
+      };
+      mockRedisService.getSocketInfo.mockImplementation((socketId: string) =>
+        Promise.resolve(socketInfoFn(socketId)),
+      );
+      setupSocketInfoBatchMock(mockRedisService, socketInfoFn);
 
       allSocketIds.forEach((id) => {
         mockSocketsMap.set(id, createMockSocket({ id }));
@@ -217,26 +237,26 @@ describe('RouletteService', () => {
       );
       mockRedisService.getReadyParticipants.mockResolvedValue(participantIds);
 
-      mockRedisService.getSocketInfo.mockImplementation((socketId: string) => {
+      const socketInfoFn = (socketId: string) => {
         if (socketId === 'owner-socket') {
-          return Promise.resolve(
-            createSocketInfo({
-              rid: 'owner-rid',
-              role: 'owner',
-              nickname: 'Owner',
-              roomId: 'room-1',
-            }),
-          );
-        }
-        return Promise.resolve(
-          createSocketInfo({
-            rid: socketId,
-            role: 'participant',
-            nickname: `User ${socketId}`,
+          return createSocketInfo({
+            rid: 'owner-rid',
+            role: 'owner',
+            nickname: 'Owner',
             roomId: 'room-1',
-          }),
-        );
-      });
+          });
+        }
+        return createSocketInfo({
+          rid: socketId,
+          role: 'participant',
+          nickname: `User ${socketId}`,
+          roomId: 'room-1',
+        });
+      };
+      mockRedisService.getSocketInfo.mockImplementation((socketId: string) =>
+        Promise.resolve(socketInfoFn(socketId)),
+      );
+      setupSocketInfoBatchMock(mockRedisService, socketInfoFn);
 
       allSocketIds.forEach((id) => {
         mockSocketsMap.set(id, createMockSocket({ id }));
@@ -260,29 +280,27 @@ describe('RouletteService', () => {
   describe('handleRoomJoin', () => {
     it('should set owner correctly for first join with valid token', async () => {
       const { server, mockSocketsMap } = createChainableMockServer();
+      const ownerRid = 'owner-rid';
 
       const socket = createMockSocket({
         id: 'socket-1',
-        data: { rid: 'owner-rid' },
+        data: { rid: 'socket-generated-rid' },
         handshake: {
           headers: {
-            cookie: `owner_token_room-1=${encodeURIComponent(JSON.stringify({ token: 'valid-token' }))}`,
+            cookie: `owner_token_room-1=${encodeURIComponent(JSON.stringify({ token: 'valid-token' }))}; rid_room-1=${ownerRid}`,
           },
         },
       });
 
       mockRedisService.getRoomOwnerToken.mockResolvedValue('valid-token');
-      mockRedisService.hasActiveOwnerConnection.mockResolvedValue(false);
-      // First call returns null (checking if owner exists), second call returns the new owner
-      mockRedisService.getRoomOwner
-        .mockResolvedValueOnce(null) // First check during join
-        .mockResolvedValueOnce('owner-rid'); // After setRoomOwner, when checking isOwner
-      mockRedisService.setRoomOwner.mockResolvedValue(true);
+      mockRedisService.getActiveOwnerSocketId.mockResolvedValue(null);
+      // getRoomOwner is called in verifyOwnerToken (for rid validation) and handleOwnerJoin (for ownership check) and completeJoin (for isOwner check)
+      mockRedisService.getRoomOwner.mockResolvedValue(ownerRid); // Owner rid already set during room creation
       mockRedisService.getRoomConfig.mockResolvedValue(null);
       mockRedisService.getRoomTitle.mockResolvedValue('Test Room');
       mockRedisService.getRoomMembers.mockResolvedValue(['socket-1']);
       mockRedisService.getSocketInfo.mockResolvedValue(
-        createSocketInfo({ rid: 'owner-rid', role: 'owner', roomId: 'room-1' }),
+        createSocketInfo({ rid: ownerRid, role: 'owner', roomId: 'room-1' }),
       );
 
       mockSocketsMap.set('socket-1', socket);
@@ -293,10 +311,8 @@ describe('RouletteService', () => {
         server as unknown as import('socket.io').Server,
       );
 
-      expect(mockRedisService.setRoomOwner).toHaveBeenCalledWith(
-        'room-1',
-        'owner-rid',
-      );
+      // setRoomOwner should NOT be called as owner rid is already set during room creation
+      expect(mockRedisService.setRoomOwner).not.toHaveBeenCalled();
       expect(socket.emit).toHaveBeenCalledWith(
         'room:joined',
         expect.objectContaining({
@@ -350,24 +366,24 @@ describe('RouletteService', () => {
         'owner-socket',
         'socket-2',
       ]);
-      mockRedisService.getSocketInfo.mockImplementation((socketId: string) => {
+      const socketInfoFn = (socketId: string) => {
         if (socketId === 'owner-socket') {
-          return Promise.resolve(
-            createSocketInfo({
-              rid: 'owner-rid',
-              role: 'owner',
-              roomId: 'room-1',
-            }),
-          );
-        }
-        return Promise.resolve(
-          createSocketInfo({
-            rid: 'participant-rid',
-            role: 'participant',
+          return createSocketInfo({
+            rid: 'owner-rid',
+            role: 'owner',
             roomId: 'room-1',
-          }),
-        );
-      });
+          });
+        }
+        return createSocketInfo({
+          rid: 'participant-rid',
+          role: 'participant',
+          roomId: 'room-1',
+        });
+      };
+      mockRedisService.getSocketInfo.mockImplementation((socketId: string) =>
+        Promise.resolve(socketInfoFn(socketId)),
+      );
+      setupSocketInfoBatchMock(mockRedisService, socketInfoFn);
 
       mockSocketsMap.set(
         'owner-socket',
@@ -408,7 +424,7 @@ describe('RouletteService', () => {
       });
 
       mockRedisService.getRoomOwnerToken.mockResolvedValue('valid-token');
-      mockRedisService.hasActiveOwnerConnection.mockResolvedValue(false);
+      mockRedisService.getActiveOwnerSocketId.mockResolvedValue(null);
       mockRedisService.getRoomOwner.mockResolvedValue(null);
       mockRedisService.setRoomOwner.mockResolvedValue(true);
       mockRedisService.getInitialOwnerNickname.mockResolvedValue('방장님');
@@ -460,21 +476,109 @@ describe('RouletteService', () => {
       });
     });
 
-    it('should reject when owner already exists with active connection', async () => {
+    it('should disconnect existing owner and allow new connection when owner reconnects with same rid', async () => {
+      const ownerRid = 'owner-rid-from-cookie';
+
+      const existingOwnerSocket = createMockSocket({
+        id: 'existing-owner-socket',
+        data: { rid: ownerRid, role: 'owner' },
+      });
+
+      const newSocket = createMockSocket({
+        id: 'new-owner-socket',
+        data: { rid: 'socket-generated-rid' }, // This will be overwritten by cookie rid
+        handshake: {
+          headers: {
+            cookie: `owner_token_room-1=${encodeURIComponent(JSON.stringify({ token: 'valid-token' }))}; rid_room-1=${ownerRid}`,
+          },
+        },
+      });
+
+      const localMockSocketsMap = new Map<string, unknown>([
+        ['existing-owner-socket', existingOwnerSocket],
+        ['new-owner-socket', newSocket],
+      ]);
+
+      const { server } = createChainableMockServer();
+      (server as { sockets: { sockets: Map<string, unknown> } }).sockets = {
+        sockets: localMockSocketsMap,
+      };
+
+      mockRedisService.getRoomOwnerToken.mockResolvedValue('valid-token');
+      mockRedisService.getActiveOwnerSocketId.mockResolvedValue(
+        'existing-owner-socket',
+      );
+      mockRedisService.getRoomOwner.mockResolvedValue(ownerRid);
+      mockRedisService.getRoomConfig.mockResolvedValue({
+        winnersCount: 1,
+        winSentiment: 'POSITIVE',
+        updatedAt: Date.now(),
+      });
+      mockRedisService.getRoomTitle.mockResolvedValue('Test Room');
+      mockRedisService.getRoomMembers.mockResolvedValue(['new-owner-socket']);
+      mockRedisService.getReadyParticipants.mockResolvedValue([]);
+
+      const socketInfoMap = new Map([
+        [
+          'new-owner-socket',
+          createSocketInfo({
+            rid: ownerRid,
+            role: 'owner',
+            roomId: 'room-1',
+          }),
+        ],
+      ]);
+      mockRedisService.getSocketInfoBatch.mockResolvedValue(socketInfoMap);
+
+      await service.handleRoomJoin(
+        newSocket as unknown as import('socket.io').Socket,
+        { roomId: 'room-1', role: 'owner' },
+        server as unknown as import('socket.io').Server,
+      );
+
+      // Existing owner should be notified and disconnected
+      expect(existingOwnerSocket.emit).toHaveBeenCalledWith(
+        'room:owner:replaced',
+        {
+          roomId: 'room-1',
+          reason: 'NEW_CONNECTION',
+        },
+      );
+      expect(existingOwnerSocket.disconnect).toHaveBeenCalledWith(true);
+
+      // Old socket data should be cleaned up
+      expect(mockRedisService.removeRoomMember).toHaveBeenCalledWith(
+        'room-1',
+        'existing-owner-socket',
+      );
+      expect(mockRedisService.removeSocketInfo).toHaveBeenCalledWith(
+        'existing-owner-socket',
+      );
+
+      // New socket should join successfully
+      expect(newSocket.emit).toHaveBeenCalledWith(
+        'room:joined',
+        expect.objectContaining({
+          roomId: 'room-1',
+        }),
+      );
+    });
+
+    it('should reject when rid cookie does not match stored owner rid', async () => {
       const { server } = createChainableMockServer();
 
       const socket = createMockSocket({
-        id: 'socket-new',
-        data: { rid: 'new-owner-rid' },
+        id: 'socket-1',
+        data: { rid: 'socket-rid' },
         handshake: {
           headers: {
-            cookie: `owner_token_room-1=${encodeURIComponent(JSON.stringify({ token: 'valid-token' }))}`,
+            cookie: `owner_token_room-1=${encodeURIComponent(JSON.stringify({ token: 'valid-token' }))}; rid_room-1=different-rid`,
           },
         },
       });
 
       mockRedisService.getRoomOwnerToken.mockResolvedValue('valid-token');
-      mockRedisService.hasActiveOwnerConnection.mockResolvedValue(true);
+      mockRedisService.getRoomOwner.mockResolvedValue('original-owner-rid');
 
       await service.handleRoomJoin(
         socket as unknown as import('socket.io').Socket,
@@ -483,7 +587,7 @@ describe('RouletteService', () => {
       );
 
       expect(socket.emit).toHaveBeenCalledWith('room:join:rejected', {
-        reason: 'OWNER_ALREADY_EXISTS',
+        reason: 'INVALID_OWNER_RID',
       });
     });
   });
@@ -510,24 +614,24 @@ describe('RouletteService', () => {
       mockRedisService.getRoomMembers.mockResolvedValue(allSocketIds);
       mockRedisService.getReadyParticipants.mockResolvedValue(['p1']);
 
-      mockRedisService.getSocketInfo.mockImplementation((socketId: string) => {
+      const socketInfoFn = (socketId: string) => {
         if (socketId === 'owner-socket') {
-          return Promise.resolve(
-            createSocketInfo({
-              rid: 'owner-rid',
-              role: 'owner',
-              roomId: 'room-1',
-            }),
-          );
-        }
-        return Promise.resolve(
-          createSocketInfo({
-            rid: socketId,
-            role: 'participant',
+          return createSocketInfo({
+            rid: 'owner-rid',
+            role: 'owner',
             roomId: 'room-1',
-          }),
-        );
-      });
+          });
+        }
+        return createSocketInfo({
+          rid: socketId,
+          role: 'participant',
+          roomId: 'room-1',
+        });
+      };
+      mockRedisService.getSocketInfo.mockImplementation((socketId: string) =>
+        Promise.resolve(socketInfoFn(socketId)),
+      );
+      setupSocketInfoBatchMock(mockRedisService, socketInfoFn);
 
       await service.handleSpinRequest(
         ownerSocket as unknown as import('socket.io').Socket,
@@ -613,24 +717,24 @@ describe('RouletteService', () => {
       mockRedisService.getReadyParticipants.mockResolvedValue(participantIds);
       mockRedisService.getRoomConfig.mockResolvedValue(createRoomConfig());
 
-      mockRedisService.getSocketInfo.mockImplementation((socketId: string) => {
+      const socketInfoFn = (socketId: string) => {
         if (socketId === 'owner-socket') {
-          return Promise.resolve(
-            createSocketInfo({
-              rid: 'owner-rid',
-              role: 'owner',
-              roomId: 'room-1',
-            }),
-          );
-        }
-        return Promise.resolve(
-          createSocketInfo({
-            rid: socketId,
-            role: 'participant',
+          return createSocketInfo({
+            rid: 'owner-rid',
+            role: 'owner',
             roomId: 'room-1',
-          }),
-        );
-      });
+          });
+        }
+        return createSocketInfo({
+          rid: socketId,
+          role: 'participant',
+          roomId: 'room-1',
+        });
+      };
+      mockRedisService.getSocketInfo.mockImplementation((socketId: string) =>
+        Promise.resolve(socketInfoFn(socketId)),
+      );
+      setupSocketInfoBatchMock(mockRedisService, socketInfoFn);
 
       participantIds.forEach((id) => {
         mockSocketsMap.set(id, createMockSocket({ id }));

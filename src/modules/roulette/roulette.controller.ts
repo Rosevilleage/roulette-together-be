@@ -1,14 +1,16 @@
 import { Controller, Logger, Post, Body, Res, Get, Req } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import type { Response, Request } from 'express';
 import { randomBytes } from 'crypto';
-import { RedisService } from '../../common/redis/redis.service';
+import { RedisService, SocketInfo } from '../../common/redis/redis.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import type { CreateRoomResponseDto } from './dto/create-room-response.dto';
 import {
   GetRoomsResponseDto,
   type RoomSummary,
 } from './dto/get-rooms-response.dto';
+import { parseOwnerToken } from './roulette.utils';
 
 @ApiTags('Roulette')
 @Controller('rooms')
@@ -18,6 +20,7 @@ export class RouletteController {
   constructor(private readonly redisService: RedisService) {}
 
   @Post()
+  @Throttle({ default: { limit: 5, ttl: 60000 } }) // 분당 5개 방 생성 제한
   @ApiOperation({ summary: '새로운 룰렛 방 생성' })
   @ApiResponse({
     status: 201,
@@ -32,6 +35,9 @@ export class RouletteController {
 
     // Generate owner token for verification
     const ownerToken = randomBytes(32).toString('hex');
+
+    // Generate owner rid for reconnection verification
+    const ownerRid = randomBytes(16).toString('hex');
 
     // Store owner token in Redis
     await this.redisService.setRoomOwnerToken(roomId, ownerToken);
@@ -75,6 +81,19 @@ export class RouletteController {
       path: '/', // Cookie available for all paths
     });
 
+    // Set owner rid cookie for reconnection verification
+    // This ensures only the same browser can reconnect as owner
+    res.cookie(`rid_${roomId}`, ownerRid, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 2 * 60 * 60 * 1000,
+      path: '/',
+    });
+
+    // Store owner rid in Redis (방장의 rid를 미리 설정)
+    await this.redisService.setRoomOwner(roomId, ownerRid);
+
     // Initialize room activity timestamp
     await this.redisService.setRoomLastActivity(roomId);
 
@@ -96,87 +115,124 @@ export class RouletteController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<GetRoomsResponseDto> {
-    const cookies = req.cookies as Record<string, string>;
-    const rooms: RoomSummary[] = [];
+    const ownerTokens = this.parseOwnerTokens(
+      req.cookies as Record<string, string>,
+    );
 
-    // Parse all owner_token_* cookies
+    if (Object.keys(ownerTokens).length === 0) {
+      return { rooms: [], queriedAt: Date.now() };
+    }
+
+    const rooms = await this.fetchRoomsWithInfo(ownerTokens, res);
+    rooms.sort((a, b) => b.lastActivity - a.lastActivity);
+
+    return { rooms, queriedAt: Date.now() };
+  }
+
+  private parseOwnerTokens(
+    cookies: Record<string, string>,
+  ): Record<string, string> {
+    const ownerTokens: Record<string, string> = {};
+
     for (const [cookieName, cookieValue] of Object.entries(cookies)) {
       if (!cookieName.startsWith('owner_token_')) {
         continue;
       }
 
       const roomId = cookieName.replace('owner_token_', '');
-
-      // Parse cookie value (now contains {roomId, token})
-      let token: string;
-      try {
-        const parsed = JSON.parse(cookieValue) as { token: string };
-        token = parsed.token;
-      } catch {
-        // Old format (plain token) - still support for backward compatibility
-        token = cookieValue;
+      const token = parseOwnerToken(cookieValue);
+      if (token) {
+        ownerTokens[roomId] = token;
       }
+    }
 
-      // Verify token matches Redis
-      const storedToken = await this.redisService.getRoomOwnerToken(roomId);
-      if (!storedToken || storedToken !== token) {
-        // Delete invalid/expired cookie
+    return ownerTokens;
+  }
+
+  private async fetchRoomsWithInfo(
+    ownerTokens: Record<string, string>,
+    res: Response,
+  ): Promise<RoomSummary[]> {
+    const roomIds = Object.keys(ownerTokens);
+
+    // 배치로 토큰과 config 조회
+    const [storedTokens, configs] = await Promise.all([
+      this.redisService.getRoomOwnerTokenBatch(roomIds),
+      this.redisService.getRoomConfigBatch(roomIds),
+    ]);
+
+    // 유효한 방만 필터링
+    const validRoomIds = roomIds.filter((roomId) => {
+      const storedToken = storedTokens.get(roomId);
+      const config = configs.get(roomId);
+
+      if (!storedToken || storedToken !== ownerTokens[roomId] || !config) {
         res.clearCookie(`owner_token_${roomId}`, { path: '/' });
-        continue; // Token mismatch or expired, skip
+        return false;
       }
+      return true;
+    });
 
-      // Check if room still exists (config is primary indicator)
-      const config = await this.redisService.getRoomConfig(roomId);
-      if (!config) {
-        // Delete cookie for expired room
-        res.clearCookie(`owner_token_${roomId}`, { path: '/' });
-        continue; // Room expired, skip
-      }
+    if (validRoomIds.length === 0) {
+      return [];
+    }
 
-      // Get additional room info
-      const lastActivity = await this.redisService.getRoomLastActivity(roomId);
-      const members = await this.redisService.getRoomMembers(roomId);
-      const ownerRid = await this.redisService.getRoomOwner(roomId);
-      const roomTitle = await this.redisService.getRoomTitle(roomId);
+    // 배치로 메타데이터 조회
+    const metadata = await this.redisService.getRoomMetadataBatch(validRoomIds);
 
-      // Get owner nickname from active socket or fallback to default
-      let ownerNickname = '생성자';
-      if (ownerRid) {
-        for (const socketId of members) {
-          const socketInfo = await this.redisService.getSocketInfo(socketId);
-          if (socketInfo?.rid === ownerRid) {
-            ownerNickname = socketInfo.nickname;
-            break;
-          }
-        }
-      }
+    // 모든 멤버의 소켓 정보를 배치로 조회
+    const allSocketIds = new Set<string>();
+    for (const roomId of validRoomIds) {
+      const roomMeta = metadata.get(roomId);
+      roomMeta?.members.forEach((socketId) => allSocketIds.add(socketId));
+    }
+    const socketInfoMap = await this.redisService.getSocketInfoBatch(
+      Array.from(allSocketIds),
+    );
 
-      // Count participants (exclude owner)
-      let participantCount = 0;
-      for (const socketId of members) {
-        const socketInfo = await this.redisService.getSocketInfo(socketId);
-        if (socketInfo?.role === 'participant') {
-          participantCount++;
-        }
-      }
+    // 방 정보 구성
+    return validRoomIds.map((roomId) => {
+      const config = configs.get(roomId)!;
+      const roomMeta = metadata.get(roomId)!;
 
-      rooms.push({
+      const { ownerNickname, participantCount } = this.extractRoomStats(
+        roomMeta.members,
+        roomMeta.ownerRid,
+        socketInfoMap,
+      );
+
+      return {
         roomId,
-        title: roomTitle || '룰렛 방',
+        title: roomMeta.title || '룰렛 방',
         participantCount,
         winnersCount: config.winnersCount,
         winSentiment: config.winSentiment,
-        lastActivity: lastActivity || Date.now(),
+        lastActivity: roomMeta.lastActivity || Date.now(),
         ownerNickname,
-      });
+      };
+    });
+  }
+
+  private extractRoomStats(
+    members: string[],
+    ownerRid: string | null,
+    socketInfoMap: Map<string, SocketInfo | null>,
+  ): { ownerNickname: string; participantCount: number } {
+    let ownerNickname = '생성자';
+    let participantCount = 0;
+
+    for (const socketId of members) {
+      const socketInfo = socketInfoMap.get(socketId);
+      if (!socketInfo) continue;
+
+      if (ownerRid && socketInfo.rid === ownerRid) {
+        ownerNickname = socketInfo.nickname;
+      }
+      if (socketInfo.role === 'participant') {
+        participantCount++;
+      }
     }
 
-    // Sort by lastActivity descending (most recent first)
-    rooms.sort((a, b) => b.lastActivity - a.lastActivity);
-
-    return {
-      rooms,
-      queriedAt: Date.now(),
-    };
+    return { ownerNickname, participantCount };
   }
 }

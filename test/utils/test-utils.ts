@@ -97,6 +97,14 @@ export const createMockRedisService = (): jest.Mocked<RedisService> => {
 
     // Active owner connection
     hasActiveOwnerConnection: jest.fn(),
+    getActiveOwnerSocketId: jest.fn(),
+
+    // Batch operations
+    getSocketInfoBatch: jest.fn().mockResolvedValue(new Map()),
+    getRoomMembersWithInfo: jest.fn().mockResolvedValue([]),
+    getRoomConfigBatch: jest.fn().mockResolvedValue(new Map()),
+    getRoomOwnerTokenBatch: jest.fn().mockResolvedValue(new Map()),
+    getRoomMetadataBatch: jest.fn().mockResolvedValue(new Map()),
   } as unknown as jest.Mocked<RedisService>;
 };
 
@@ -117,6 +125,7 @@ export const createMockSocket = (
     emit: jest.fn(),
     join: jest.fn().mockResolvedValue(undefined),
     leave: jest.fn().mockResolvedValue(undefined),
+    disconnect: jest.fn(),
     rooms: new Set<string>(),
   };
   return socket;

@@ -8,6 +8,7 @@ import { ReadyToggleDto } from './dto/ready-toggle.dto';
 import { NicknameChangeDto } from './dto/nickname-change.dto';
 import { RoomLeaveDto } from './dto/room-leave.dto';
 import { RedisService } from 'src/common/redis/redis.service';
+import { parseCookies, parseOwnerToken, selectRandom } from './roulette.utils';
 
 interface SocketWithData extends Socket {
   data: {
@@ -47,153 +48,211 @@ export class RouletteService {
       `Room join attempt: roomId=${data?.roomId}, role=${data?.role}`,
     );
 
-    if (!data?.roomId || !data?.role) {
-      this.logger.warn('Room join rejected: Missing roomId or role');
-      socket.emit('room:join:rejected', {
-        reason: 'INVALID_REQUEST',
-      });
+    // Validate request
+    const validation = this.validateJoinRequest(socket, data);
+    if (!validation.valid) {
+      this.rejectJoin(socket, validation.reason!);
       return;
     }
 
     const { roomId, role } = data;
-    const rid = this.getRid(socket);
+    let rid = validation.rid!;
 
-    if (!rid) {
-      this.logger.warn(`Room join rejected: No rid found for room ${roomId}`);
-      socket.emit('room:join:rejected', {
-        reason: 'INVALID_RID',
-      });
+    // Verify owner token if owner role
+    if (role === 'owner') {
+      const tokenResult = await this.verifyOwnerToken(socket, roomId);
+      if (!tokenResult.valid) {
+        this.rejectJoin(socket, tokenResult.reason!);
+        return;
+      }
+      // Use the rid from cookie for owner (ensures consistent identity)
+      if (tokenResult.ownerRid) {
+        rid = tokenResult.ownerRid;
+        // Update socket data with the owner's rid from cookie
+        (socket as SocketWithData).data.rid = rid;
+      }
+    }
+
+    // Handle role-specific join logic
+    const joinResult =
+      role === 'owner'
+        ? await this.handleOwnerJoin(roomId, rid, server, data.nickname)
+        : await this.handleParticipantJoin(roomId, data.nickname);
+
+    if (!joinResult.success) {
+      this.rejectJoin(socket, joinResult.reason!);
       return;
     }
 
-    // Verify owner token from cookie if role is owner
-    if (role === 'owner') {
-      const cookies = socket.handshake.headers.cookie;
-      let ownerTokenFromCookie: string | undefined;
+    // Complete join process
+    await this.completeJoin(
+      socket,
+      roomId,
+      rid,
+      role,
+      joinResult.nickname!,
+      server,
+    );
+  }
 
-      if (cookies) {
-        // Parse cookies manually (cookie-parser doesn't work with Socket.IO)
-        const cookieObj: Record<string, string> = {};
-        cookies.split(';').forEach((cookie) => {
-          const [key, value] = cookie.trim().split('=');
-          if (key && value) {
-            cookieObj[key] = decodeURIComponent(value);
-          }
-        });
-        const cookieValue = cookieObj[`owner_token_${roomId}`];
+  private validateJoinRequest(
+    socket: Socket,
+    data: RoomJoinDto,
+  ): { valid: boolean; rid?: string; reason?: string } {
+    if (!data?.roomId || !data?.role) {
+      this.logger.warn('Room join rejected: Missing roomId or role');
+      return { valid: false, reason: 'INVALID_REQUEST' };
+    }
 
-        // Parse cookie value (may contain {roomId, token} or just token for backward compatibility)
-        if (cookieValue) {
-          try {
-            const parsed = JSON.parse(cookieValue) as { token: string };
-            ownerTokenFromCookie = parsed.token;
-          } catch {
-            // Old format (plain token) - still support for backward compatibility
-            ownerTokenFromCookie = cookieValue;
-          }
-        }
-      }
+    const rid = this.getRid(socket);
+    if (!rid) {
+      this.logger.warn(
+        `Room join rejected: No rid found for room ${data.roomId}`,
+      );
+      return { valid: false, reason: 'INVALID_RID' };
+    }
 
-      if (!ownerTokenFromCookie) {
-        this.logger.warn(
-          `Room join rejected: Missing owner token for room ${roomId}`,
+    return { valid: true, rid };
+  }
+
+  private async verifyOwnerToken(
+    socket: Socket,
+    roomId: string,
+  ): Promise<{ valid: boolean; ownerRid?: string; reason?: string }> {
+    const cookies = socket.handshake.headers.cookie;
+    if (!cookies) {
+      this.logger.warn(
+        `Room join rejected: Missing owner token for room ${roomId}`,
+      );
+      return { valid: false, reason: 'MISSING_OWNER_TOKEN' };
+    }
+
+    const cookieObj = parseCookies(cookies);
+    const ownerTokenFromCookie = parseOwnerToken(
+      cookieObj[`owner_token_${roomId}`],
+    );
+
+    if (!ownerTokenFromCookie) {
+      this.logger.warn(
+        `Room join rejected: Missing owner token for room ${roomId}`,
+      );
+      return { valid: false, reason: 'MISSING_OWNER_TOKEN' };
+    }
+
+    const storedToken = await this.redisService.getRoomOwnerToken(roomId);
+    if (!storedToken || storedToken !== ownerTokenFromCookie) {
+      this.logger.warn(
+        `Room join rejected: Invalid owner token for room ${roomId}`,
+      );
+      return { valid: false, reason: 'INVALID_OWNER_TOKEN' };
+    }
+
+    // Verify rid cookie matches stored owner rid
+    const ridFromCookie = cookieObj[`rid_${roomId}`];
+    const storedOwnerRid = await this.redisService.getRoomOwner(roomId);
+
+    if (storedOwnerRid && ridFromCookie && ridFromCookie !== storedOwnerRid) {
+      this.logger.warn(
+        `Room join rejected: rid mismatch for room ${roomId} (cookie: ${ridFromCookie}, stored: ${storedOwnerRid})`,
+      );
+      return { valid: false, reason: 'INVALID_OWNER_RID' };
+    }
+
+    this.logger.debug(`Owner token verified for room ${roomId}`);
+    // Return the rid from cookie if available, otherwise use stored rid
+    return {
+      valid: true,
+      ownerRid: ridFromCookie || storedOwnerRid || undefined,
+    };
+  }
+
+  private async handleOwnerJoin(
+    roomId: string,
+    rid: string,
+    server: Server,
+    providedNickname?: string,
+  ): Promise<{ success: boolean; nickname?: string; reason?: string }> {
+    // Check if owner has an active connection and disconnect existing one
+    const existingOwnerSocketId =
+      await this.redisService.getActiveOwnerSocketId(roomId);
+
+    if (existingOwnerSocketId) {
+      // Disconnect existing owner socket to allow new connection
+      const existingSocket = server.sockets.sockets.get(existingOwnerSocketId);
+      if (existingSocket) {
+        this.logger.debug(
+          `Disconnecting existing owner socket ${existingOwnerSocketId} for room ${roomId}`,
         );
-        socket.emit('room:join:rejected', {
-          reason: 'MISSING_OWNER_TOKEN',
+        existingSocket.emit('room:owner:replaced', {
+          roomId,
+          reason: 'NEW_CONNECTION',
         });
-        return;
+        existingSocket.disconnect(true);
       }
 
-      // Verify token against Redis
-      const storedToken = await this.redisService.getRoomOwnerToken(roomId);
-      if (!storedToken || storedToken !== ownerTokenFromCookie) {
-        this.logger.warn(
-          `Room join rejected: Invalid owner token for room ${roomId}`,
-        );
-        socket.emit('room:join:rejected', {
-          reason: 'INVALID_OWNER_TOKEN',
-        });
-        return;
-      }
-      this.logger.debug(`Owner token verified for room ${roomId}`);
+      // Clean up old socket data
+      await this.redisService.removeRoomMember(roomId, existingOwnerSocketId);
+      await this.redisService.removeSocketInfo(existingOwnerSocketId);
     }
 
     // Determine nickname
-    let nickname = data.nickname?.trim();
+    let nickname = providedNickname?.trim();
     if (!nickname) {
-      if (role === 'owner') {
-        // Check if there's an initial nickname set during room creation
-        let initialNickname: string | null = null;
-        try {
-          initialNickname =
-            await this.redisService.getInitialOwnerNickname(roomId);
-        } catch (error: unknown) {
-          this.logger.error('Error getting initial owner nickname', error);
-        }
-
+      try {
+        const initialNickname =
+          await this.redisService.getInitialOwnerNickname(roomId);
         if (initialNickname) {
           nickname = initialNickname;
-          // Remove initial nickname after use
-          try {
-            await this.redisService.removeInitialOwnerNickname(roomId);
-          } catch (error: unknown) {
-            this.logger.error('Error removing initial owner nickname', error);
-          }
-        } else {
-          nickname = '생성자';
+          await this.redisService.removeInitialOwnerNickname(roomId);
         }
-      } else {
-        // Generate auto nickname for participants
-        const participantNumber =
-          await this.redisService.getNextParticipantNumber(roomId);
-        nickname = `참가자 ${participantNumber}`;
+      } catch (error: unknown) {
+        this.logger.error('Error getting initial owner nickname', error);
       }
+      nickname = nickname || '생성자';
     }
 
-    // Handle owner role
-    if (role === 'owner') {
-      // Token has already been verified at this point (lines 70-123)
-      // Check if owner has an active connection
-      const hasActiveOwner =
-        await this.redisService.hasActiveOwnerConnection(roomId);
-
-      if (hasActiveOwner) {
-        // Another socket is already connected as owner with the same token
-        socket.emit('room:join:rejected', {
-          reason: 'OWNER_ALREADY_EXISTS',
-        });
-        return;
-      }
-
-      // Owner reconnecting or first connection - update owner rid
-      // This allows owner to reconnect after disconnect with the same token
-      const ownerRid = await this.redisService.getRoomOwner(roomId);
-      if (ownerRid && ownerRid !== rid) {
-        // Owner is reconnecting with a new socket (new rid)
-        // Update the owner rid to the new one
-        await this.redisService.getClient().set(
-          `room:owner:${roomId}`,
-          rid,
-          'EX',
-          Math.floor((1000 * 60 * 30) / 1000), // 30 minutes
-        );
-      } else if (!ownerRid) {
-        // First time owner connection
-        await this.redisService.setRoomOwner(roomId, rid);
-      }
+    // Ensure owner rid is set in Redis
+    // Note: Owner rid is now pre-set during room creation via controller
+    // This is kept for backwards compatibility if rid_cookie is missing
+    const ownerRid = await this.redisService.getRoomOwner(roomId);
+    if (!ownerRid) {
+      await this.redisService.setRoomOwner(roomId, rid);
     }
 
+    return { success: true, nickname };
+  }
+
+  private async handleParticipantJoin(
+    roomId: string,
+    providedNickname?: string,
+  ): Promise<{ success: boolean; nickname?: string; reason?: string }> {
+    let nickname = providedNickname?.trim();
+    if (!nickname) {
+      const participantNumber =
+        await this.redisService.getNextParticipantNumber(roomId);
+      nickname = `참가자 ${participantNumber}`;
+    }
+
+    return { success: true, nickname };
+  }
+
+  private async completeJoin(
+    socket: Socket,
+    roomId: string,
+    rid: string,
+    role: string,
+    nickname: string,
+    server: Server,
+  ): Promise<void> {
     // Join socket room
     await socket.join(roomId);
-
-    // Add to Redis members set
     await this.redisService.addRoomMember(roomId, socket.id);
 
-    // Store role and nickname in socket.data for later use
+    // Store in socket.data
     (socket as SocketWithData).data.role = role as 'owner' | 'participant';
     (socket as SocketWithData).data.nickname = nickname;
 
-    // Store socket info with nickname and role
+    // Store socket info
     await this.redisService.setSocketInfo(socket.id, {
       roomId,
       rid,
@@ -202,11 +261,11 @@ export class RouletteService {
       lastSeen: Date.now(),
     });
 
-    // Check if user is owner
+    // Get owner info
     const ownerRid = await this.redisService.getRoomOwner(roomId);
     const isOwner = ownerRid === rid;
 
-    // Ensure default config exists
+    // Ensure config exists
     let config = await this.redisService.getRoomConfig(roomId);
     if (!config) {
       config = {
@@ -220,25 +279,16 @@ export class RouletteService {
     // Get room title
     const title = (await this.redisService.getRoomTitle(roomId)) || '룰렛 방';
 
-    // Send room:joined
+    // Send events
     socket.emit('room:joined', {
       roomId,
       title,
       serverTime: Date.now(),
-      you: {
-        isOwner,
-        nickname,
-        rid,
-      },
+      you: { isOwner, nickname, rid },
     });
 
-    // Send room:config
-    socket.emit('room:config', {
-      roomId,
-      ...config,
-    });
+    socket.emit('room:config', { roomId, ...config });
 
-    // Send room:state (optional)
     const state = await this.redisService.getRoomState(roomId);
     if (state) {
       socket.emit('room:state', {
@@ -248,13 +298,12 @@ export class RouletteService {
       });
     }
 
-    // Broadcast participants list to owner
-    // - If a participant joined: notify owner of new participant
-    // - If owner joined: send current participants list to owner
     await this.broadcastParticipantsToOwner(roomId, server);
-
-    // Update room activity timestamp
     await this.redisService.setRoomLastActivity(roomId);
+  }
+
+  private rejectJoin(socket: Socket, reason: string): void {
+    socket.emit('room:join:rejected', { reason });
   }
 
   async handleRoomConfigSet(
@@ -362,16 +411,29 @@ export class RouletteService {
     }
 
     try {
-      // Get active members
-      const allSocketIds = await this.redisService.getRoomMembers(roomId);
+      // 배치로 멤버 및 준비 상태 조회
+      const [allSocketIds, readyParticipants, config] = await Promise.all([
+        this.redisService.getRoomMembers(roomId),
+        this.redisService
+          .getReadyParticipants(roomId)
+          .catch((error: unknown) => {
+            this.logger.error('Error getting ready participants', error);
+            return [] as string[];
+          }),
+        this.redisService.getRoomConfig(roomId),
+      ]);
+
+      // 배치로 소켓 정보 조회
+      const socketInfoMap =
+        await this.redisService.getSocketInfoBatch(allSocketIds);
+
       const activeSocketIds: string[] = [];
       const participantSocketIds: string[] = [];
 
       for (const socketId of allSocketIds) {
-        const socketInfo = await this.redisService.getSocketInfo(socketId);
+        const socketInfo = socketInfoMap.get(socketId);
         if (socketInfo && socketInfo.roomId === roomId) {
           activeSocketIds.push(socketId);
-          // Collect participants (not owner)
           if (socketInfo.role === 'participant') {
             participantSocketIds.push(socketId);
           }
@@ -388,20 +450,11 @@ export class RouletteService {
       }
 
       // Check if all participants are ready
-      let readyParticipants: string[] = [];
-      try {
-        const result = await this.redisService.getReadyParticipants(roomId);
-        readyParticipants = result;
-      } catch (error: unknown) {
-        this.logger.error('Error getting ready participants', error);
-      }
       const readySet = new Set<string>(readyParticipants);
-
       const allParticipantsReady = participantSocketIds.every((socketId) =>
         readySet.has(socketId),
       );
 
-      // Only require ready check if there are participants
       if (participantSocketIds.length > 0 && !allParticipantsReady) {
         socket.emit('spin:rejected', {
           roomId,
@@ -411,8 +464,6 @@ export class RouletteService {
         return;
       }
 
-      // Get config
-      const config = await this.redisService.getRoomConfig(roomId);
       if (!config) {
         socket.emit('spin:rejected', {
           roomId,
@@ -424,15 +475,15 @@ export class RouletteService {
 
       // Select winners
       const k = Math.min(config.winnersCount, activeSocketIds.length);
-      const winners = this.selectRandom(activeSocketIds, k);
+      const winners = selectRandom(activeSocketIds, k);
       const winnerSet = new Set(winners);
 
       // Set idempotency
       await this.redisService.setIdempotency(roomId, requestId, spinId);
 
       const decidedAt = Date.now();
-      const revealAt = decidedAt + 2000; // 2s delay for animation
-      const durationMs = 3000; // 3s animation
+      const revealAt = decidedAt + 2000;
+      const durationMs = 3000;
 
       // Broadcast spin:resolved to all
       server.to(roomId).emit('spin:resolved', {
@@ -442,13 +493,10 @@ export class RouletteService {
         winnersCount: k,
         winSentiment: config.winSentiment,
         decidedAt,
-        animation: {
-          revealAt,
-          durationMs,
-        },
+        animation: { revealAt, durationMs },
       });
 
-      // Send individual outcomes with nickname
+      // Send individual outcomes with nickname (socketInfoMap 재사용)
       const outcomes: Array<{
         socketId: string;
         nickname: string;
@@ -457,7 +505,7 @@ export class RouletteService {
 
       for (const socketId of activeSocketIds) {
         const isWinner = winnerSet.has(socketId);
-        const socketInfo = await this.redisService.getSocketInfo(socketId);
+        const socketInfo = socketInfoMap.get(socketId);
         const nickname = socketInfo?.nickname || '알 수 없음';
 
         outcomes.push({
@@ -749,58 +797,46 @@ export class RouletteService {
     }
   }
 
-  private selectRandom<T>(array: T[], count: number): T[] {
-    const shuffled = [...array];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    return shuffled.slice(0, count);
-  }
-
   private async broadcastParticipantsToOwner(
     roomId: string,
     server: Server,
   ): Promise<void> {
-    // Get owner rid
     const ownerRid = await this.redisService.getRoomOwner(roomId);
     if (!ownerRid) {
       return;
     }
 
-    // Get all room members
+    // 배치로 조회
     const allSocketIds = await this.redisService.getRoomMembers(roomId);
     let readyParticipants: string[] = [];
     try {
-      const result = await this.redisService.getReadyParticipants(roomId);
-      readyParticipants = result;
+      readyParticipants = await this.redisService.getReadyParticipants(roomId);
     } catch (error: unknown) {
       this.logger.error('Error getting ready participants', error);
     }
+
     const readySet = new Set<string>(readyParticipants);
 
-    // Collect participant info (excluding owner)
+    // 배치로 소켓 정보 조회
+    const socketInfoMap =
+      await this.redisService.getSocketInfoBatch(allSocketIds);
+
     const participants: Array<{
       rid: string;
       nickname: string;
       ready: boolean;
     }> = [];
-
     let ownerSocketId: string | null = null;
 
     for (const socketId of allSocketIds) {
-      const socketInfo = await this.redisService.getSocketInfo(socketId);
-      if (!socketInfo) {
-        continue;
-      }
+      const socketInfo = socketInfoMap.get(socketId);
+      if (!socketInfo) continue;
 
-      // Check if this is the owner
       if (socketInfo.rid === ownerRid) {
         ownerSocketId = socketId;
         continue;
       }
 
-      // Only include participants
       if (socketInfo.role === 'participant') {
         participants.push({
           rid: socketInfo.rid,
@@ -810,7 +846,6 @@ export class RouletteService {
       }
     }
 
-    // Send to owner only
     if (ownerSocketId) {
       const ownerSocket = server.sockets.sockets.get(ownerSocketId);
       if (ownerSocket) {

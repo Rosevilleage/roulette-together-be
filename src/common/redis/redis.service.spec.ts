@@ -749,4 +749,39 @@ describe('RedisService', () => {
       expect(result).toBe(true);
     });
   });
+
+  describe('getActiveOwnerSocketId', () => {
+    it('should return null if no owner', async () => {
+      mockRedis.get.mockResolvedValue(null);
+
+      const result = await service.getActiveOwnerSocketId('room-1');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null if owner has no active socket', async () => {
+      mockRedis.get
+        .mockResolvedValueOnce('owner-rid') // getRoomOwner
+        .mockResolvedValueOnce(JSON.stringify({ rid: 'other-rid' })); // getSocketInfo
+      mockRedis.smembers.mockResolvedValue(['socket-1']);
+
+      const result = await service.getActiveOwnerSocketId('room-1');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return socket id if owner has active socket', async () => {
+      const ownerRid = 'owner-rid';
+      mockRedis.get
+        .mockResolvedValueOnce(ownerRid) // getRoomOwner
+        .mockResolvedValueOnce(
+          JSON.stringify({ rid: ownerRid, roomId: 'room-1' }),
+        ); // getSocketInfo
+      mockRedis.smembers.mockResolvedValue(['socket-1']);
+
+      const result = await service.getActiveOwnerSocketId('room-1');
+
+      expect(result).toBe('socket-1');
+    });
+  });
 });

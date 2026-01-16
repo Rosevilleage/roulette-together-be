@@ -194,12 +194,27 @@ describe('RouletteController', () => {
       });
       const mockRes = createMockResponse();
 
-      mockRedisService.getRoomOwnerToken.mockResolvedValue(token);
-      mockRedisService.getRoomConfig.mockResolvedValue(createRoomConfig());
-      mockRedisService.getRoomLastActivity.mockResolvedValue(Date.now());
-      mockRedisService.getRoomMembers.mockResolvedValue([]);
-      mockRedisService.getRoomOwner.mockResolvedValue(null);
-      mockRedisService.getRoomTitle.mockResolvedValue('Test Room');
+      // 배치 메서드 mock
+      mockRedisService.getRoomOwnerTokenBatch.mockResolvedValue(
+        new Map([[roomId, token]]),
+      );
+      mockRedisService.getRoomConfigBatch.mockResolvedValue(
+        new Map([[roomId, createRoomConfig()]]),
+      );
+      mockRedisService.getRoomMetadataBatch.mockResolvedValue(
+        new Map([
+          [
+            roomId,
+            {
+              title: 'Test Room',
+              lastActivity: Date.now(),
+              ownerRid: null,
+              members: [],
+            },
+          ],
+        ]),
+      );
+      mockRedisService.getSocketInfoBatch.mockResolvedValue(new Map());
 
       const result = await controller.getRooms(
         mockReq as Request,
@@ -221,8 +236,13 @@ describe('RouletteController', () => {
       });
       const mockRes = createMockResponse();
 
-      mockRedisService.getRoomOwnerToken.mockResolvedValue(token);
-      mockRedisService.getRoomConfig.mockResolvedValue(null); // Room expired
+      // 배치 메서드 mock - config가 없는 경우 (만료됨)
+      mockRedisService.getRoomOwnerTokenBatch.mockResolvedValue(
+        new Map([[roomId, token]]),
+      );
+      mockRedisService.getRoomConfigBatch.mockResolvedValue(
+        new Map([[roomId, null]]),
+      );
 
       const result = await controller.getRooms(
         mockReq as Request,
@@ -245,7 +265,13 @@ describe('RouletteController', () => {
       });
       const mockRes = createMockResponse();
 
-      mockRedisService.getRoomOwnerToken.mockResolvedValue('correct-token');
+      // 배치 메서드 mock - 토큰 불일치
+      mockRedisService.getRoomOwnerTokenBatch.mockResolvedValue(
+        new Map([[roomId, 'correct-token']]),
+      );
+      mockRedisService.getRoomConfigBatch.mockResolvedValue(
+        new Map([[roomId, createRoomConfig()]]),
+      );
 
       const result = await controller.getRooms(
         mockReq as Request,
@@ -269,24 +295,33 @@ describe('RouletteController', () => {
       });
       const mockRes = createMockResponse();
 
-      mockRedisService.getRoomOwnerToken.mockResolvedValue(token);
-      mockRedisService.getRoomConfig.mockResolvedValue(createRoomConfig());
-      mockRedisService.getRoomLastActivity.mockResolvedValue(Date.now());
-      mockRedisService.getRoomMembers.mockResolvedValue([
-        'socket-1',
-        'socket-2',
-        'socket-3',
-      ]);
-      mockRedisService.getRoomOwner.mockResolvedValue('owner-rid');
-      mockRedisService.getRoomTitle.mockResolvedValue('Test Room');
-      mockRedisService.getSocketInfo.mockImplementation((socketId: string) => {
-        if (socketId === 'socket-1') {
-          return Promise.resolve(
-            createSocketInfo({ rid: 'owner-rid', role: 'owner' }),
-          );
-        }
-        return Promise.resolve(createSocketInfo({ role: 'participant' }));
-      });
+      // 배치 메서드 mock
+      mockRedisService.getRoomOwnerTokenBatch.mockResolvedValue(
+        new Map([[roomId, token]]),
+      );
+      mockRedisService.getRoomConfigBatch.mockResolvedValue(
+        new Map([[roomId, createRoomConfig()]]),
+      );
+      mockRedisService.getRoomMetadataBatch.mockResolvedValue(
+        new Map([
+          [
+            roomId,
+            {
+              title: 'Test Room',
+              lastActivity: Date.now(),
+              ownerRid: 'owner-rid',
+              members: ['socket-1', 'socket-2', 'socket-3'],
+            },
+          ],
+        ]),
+      );
+      mockRedisService.getSocketInfoBatch.mockResolvedValue(
+        new Map([
+          ['socket-1', createSocketInfo({ rid: 'owner-rid', role: 'owner' })],
+          ['socket-2', createSocketInfo({ role: 'participant' })],
+          ['socket-3', createSocketInfo({ role: 'participant' })],
+        ]),
+      );
 
       const result = await controller.getRooms(
         mockReq as Request,
@@ -306,18 +341,37 @@ describe('RouletteController', () => {
       });
       const mockRes = createMockResponse();
 
-      mockRedisService.getRoomOwnerToken.mockResolvedValue(token);
-      mockRedisService.getRoomConfig.mockResolvedValue(createRoomConfig());
-      mockRedisService.getRoomLastActivity.mockResolvedValue(Date.now());
-      mockRedisService.getRoomMembers.mockResolvedValue(['socket-owner']);
-      mockRedisService.getRoomOwner.mockResolvedValue('owner-rid');
-      mockRedisService.getRoomTitle.mockResolvedValue('Test Room');
-      mockRedisService.getSocketInfo.mockResolvedValue(
-        createSocketInfo({
-          rid: 'owner-rid',
-          role: 'owner',
-          nickname: '방장님',
-        }),
+      // 배치 메서드 mock
+      mockRedisService.getRoomOwnerTokenBatch.mockResolvedValue(
+        new Map([[roomId, token]]),
+      );
+      mockRedisService.getRoomConfigBatch.mockResolvedValue(
+        new Map([[roomId, createRoomConfig()]]),
+      );
+      mockRedisService.getRoomMetadataBatch.mockResolvedValue(
+        new Map([
+          [
+            roomId,
+            {
+              title: 'Test Room',
+              lastActivity: Date.now(),
+              ownerRid: 'owner-rid',
+              members: ['socket-owner'],
+            },
+          ],
+        ]),
+      );
+      mockRedisService.getSocketInfoBatch.mockResolvedValue(
+        new Map([
+          [
+            'socket-owner',
+            createSocketInfo({
+              rid: 'owner-rid',
+              role: 'owner',
+              nickname: '방장님',
+            }),
+          ],
+        ]),
       );
 
       const result = await controller.getRooms(
@@ -345,17 +399,42 @@ describe('RouletteController', () => {
       });
       const mockRes = createMockResponse();
 
-      mockRedisService.getRoomOwnerToken.mockImplementation((roomId: string) =>
-        Promise.resolve(roomId === 'room-1' ? 'token-1' : 'token-2'),
+      // 배치 메서드 mock
+      mockRedisService.getRoomOwnerTokenBatch.mockResolvedValue(
+        new Map([
+          ['room-1', 'token-1'],
+          ['room-2', 'token-2'],
+        ]),
       );
-      mockRedisService.getRoomConfig.mockResolvedValue(createRoomConfig());
-      mockRedisService.getRoomLastActivity.mockImplementation(
-        (roomId: string) =>
-          Promise.resolve(roomId === 'room-1' ? now - 10000 : now),
+      mockRedisService.getRoomConfigBatch.mockResolvedValue(
+        new Map([
+          ['room-1', createRoomConfig()],
+          ['room-2', createRoomConfig()],
+        ]),
       );
-      mockRedisService.getRoomMembers.mockResolvedValue([]);
-      mockRedisService.getRoomOwner.mockResolvedValue(null);
-      mockRedisService.getRoomTitle.mockResolvedValue('Test Room');
+      mockRedisService.getRoomMetadataBatch.mockResolvedValue(
+        new Map([
+          [
+            'room-1',
+            {
+              title: 'Test Room 1',
+              lastActivity: now - 10000,
+              ownerRid: null,
+              members: [],
+            },
+          ],
+          [
+            'room-2',
+            {
+              title: 'Test Room 2',
+              lastActivity: now,
+              ownerRid: null,
+              members: [],
+            },
+          ],
+        ]),
+      );
+      mockRedisService.getSocketInfoBatch.mockResolvedValue(new Map());
 
       const result = await controller.getRooms(
         mockReq as Request,
@@ -375,12 +454,27 @@ describe('RouletteController', () => {
       });
       const mockRes = createMockResponse();
 
-      mockRedisService.getRoomOwnerToken.mockResolvedValue(token);
-      mockRedisService.getRoomConfig.mockResolvedValue(createRoomConfig());
-      mockRedisService.getRoomLastActivity.mockResolvedValue(Date.now());
-      mockRedisService.getRoomMembers.mockResolvedValue([]);
-      mockRedisService.getRoomOwner.mockResolvedValue(null);
-      mockRedisService.getRoomTitle.mockResolvedValue('Old Room');
+      // 배치 메서드 mock
+      mockRedisService.getRoomOwnerTokenBatch.mockResolvedValue(
+        new Map([[roomId, token]]),
+      );
+      mockRedisService.getRoomConfigBatch.mockResolvedValue(
+        new Map([[roomId, createRoomConfig()]]),
+      );
+      mockRedisService.getRoomMetadataBatch.mockResolvedValue(
+        new Map([
+          [
+            roomId,
+            {
+              title: 'Old Room',
+              lastActivity: Date.now(),
+              ownerRid: null,
+              members: [],
+            },
+          ],
+        ]),
+      );
+      mockRedisService.getSocketInfoBatch.mockResolvedValue(new Map());
 
       const result = await controller.getRooms(
         mockReq as Request,
