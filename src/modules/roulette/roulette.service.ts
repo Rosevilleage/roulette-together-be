@@ -18,6 +18,22 @@ interface SocketWithData extends Socket {
   };
 }
 
+/**
+ * 룰렛 게임 비즈니스 로직 서비스
+ *
+ * WebSocket 이벤트 처리 및 게임 로직을 담당합니다.
+ *
+ * @remarks
+ * 방 참가 플로우:
+ * 1. 방장: HTTP로 방 생성 → WebSocket 연결 → room:join (owner)
+ * 2. 참가자: URL로 접근 → WebSocket 연결 → room:join (participant)
+ *
+ * 스핀 플로우:
+ * 1. 모든 참가자 ready 상태
+ * 2. 방장 spin:request
+ * 3. 서버에서 Fisher-Yates 셔플로 당첨자 선정
+ * 4. 결과 브로드캐스트
+ */
 @Injectable()
 export class RouletteService {
   private readonly logger = new Logger(RouletteService.name);
@@ -115,10 +131,25 @@ export class RouletteService {
     return { valid: true, rid };
   }
 
+  /**
+   * 방장 토큰 검증
+   *
+   * @remarks
+   * 방장 인증 플로우:
+   * 1. HTTP-only 쿠키에서 owner_token_{roomId} 추출
+   * 2. Redis의 room:owner:token:{roomId}와 비교
+   * 3. rid 쿠키와 저장된 방장 rid 일치 여부 확인
+   * 4. 불일치 시 적절한 오류 코드로 거부
+   *
+   * 멱등성:
+   * - 동일 토큰으로 재연결 시 기존 정보 복원
+   * - 다른 브라우저/기기에서는 참가자로 입장
+   */
   private async verifyOwnerToken(
     socket: Socket,
     roomId: string,
   ): Promise<{ valid: boolean; ownerRid?: string; reason?: string }> {
+    // 토큰 검증 - HTTP-only 쿠키 사용으로 XSS 방지
     const cookies = socket.handshake.headers.cookie;
     if (!cookies) {
       this.logger.warn(
@@ -147,7 +178,7 @@ export class RouletteService {
       return { valid: false, reason: 'INVALID_OWNER_TOKEN' };
     }
 
-    // Verify rid cookie matches stored owner rid
+    // rid 쿠키와 저장된 방장 rid 일치 여부 확인
     const ridFromCookie = cookieObj[`rid_${roomId}`];
     const storedOwnerRid = await this.redisService.getRoomOwner(roomId);
 
@@ -159,7 +190,6 @@ export class RouletteService {
     }
 
     this.logger.debug(`Owner token verified for room ${roomId}`);
-    // Return the rid from cookie if available, otherwise use stored rid
     return {
       valid: true,
       ownerRid: ridFromCookie || storedOwnerRid || undefined,

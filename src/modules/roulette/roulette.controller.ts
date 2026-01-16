@@ -13,7 +13,10 @@ import {
 import { parseOwnerToken } from './roulette.utils';
 
 @ApiTags('Roulette')
-@Controller('rooms')
+@Controller({
+  path: 'rooms',
+  version: '1',
+})
 export class RouletteController {
   private readonly logger = new Logger(RouletteController.name);
 

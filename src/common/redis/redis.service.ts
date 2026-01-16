@@ -29,6 +29,18 @@ export interface SocketInfo {
   lastSeen: number;
 }
 
+/**
+ * Redis 서비스
+ *
+ * 룰렛 게임의 모든 상태를 Redis에 저장하고 관리합니다.
+ * - 방 설정 및 멤버 관리
+ * - 소켓 정보 추적
+ * - 분산 락 및 멱등성 키 관리
+ *
+ * @remarks
+ * 모든 키는 기본 2시간 TTL을 가지며, 방장 퇴장 시 30분으로 단축됩니다.
+ * 멀티 인스턴스 환경을 위해 별도의 subscriber/publisher 클라이언트를 제공합니다.
+ */
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
@@ -180,7 +192,20 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.del(`room:socket:${socketId}`);
   }
 
-  // Distributed lock for spin
+  /**
+   * 분산 락 획득
+   *
+   * @param roomId - 방 ID
+   * @param spinId - 락 소유자 식별값 (해제 시 검증용)
+   * @param ttlMs - 락 만료 시간 (밀리초)
+   * @returns 락 획득 성공 여부
+   *
+   * @example
+   * const acquired = await this.redisService.acquireSpinLock('room123', 'spin_abc', 10000);
+   * if (!acquired) {
+   *   throw new AlreadySpinningException();
+   * }
+   */
   async acquireSpinLock(
     roomId: string,
     spinId: string,
@@ -196,6 +221,16 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return result === 'OK';
   }
 
+  /**
+   * 분산 락 해제
+   *
+   * @param roomId - 방 ID
+   * @param spinId - 락 소유자 식별값
+   *
+   * @remarks
+   * Lua 스크립트를 사용하여 원자적으로 락을 해제합니다.
+   * 본인이 소유한 락만 해제할 수 있습니다.
+   */
   async releaseSpinLock(roomId: string, spinId: string): Promise<void> {
     const lua = `
 			if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -207,7 +242,16 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.eval(lua, 1, `lock:spin:${roomId}`, spinId);
   }
 
-  // Idempotency
+  /**
+   * 멱등성 키 확인
+   *
+   * @param roomId - 방 ID
+   * @param requestId - 클라이언트가 제공한 요청 ID
+   * @returns 이미 처리된 요청이면 spinId, 아니면 null
+   *
+   * @remarks
+   * 30초 TTL로 중복 요청을 방지합니다.
+   */
   async checkIdempotency(
     roomId: string,
     requestId: string,
@@ -215,6 +259,13 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return this.client.get(`idem:spin:${roomId}:${requestId}`);
   }
 
+  /**
+   * 멱등성 키 설정
+   *
+   * @param roomId - 방 ID
+   * @param requestId - 클라이언트가 제공한 요청 ID
+   * @param spinId - 생성된 스핀 ID
+   */
   async setIdempotency(
     roomId: string,
     requestId: string,

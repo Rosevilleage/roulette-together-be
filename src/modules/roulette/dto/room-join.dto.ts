@@ -27,11 +27,12 @@ export class RoomJoinDto {
   role: RoomRole;
 
   @ApiPropertyOptional({
-    description: '사용자 닉네임 (선택 사항, 없으면 자동 생성)',
+    description: '사용자 닉네임 (1-20자, 선택 사항, 없으면 자동 생성)',
     example: '플레이어1',
+    maxLength: 20,
   })
   @IsOptional()
   @IsString()
-  @MaxLength(50)
+  @MaxLength(20)
   nickname?: string;
 }

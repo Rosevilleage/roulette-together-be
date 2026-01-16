@@ -3,6 +3,8 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { validate } from './common/config/env.validation';
+import { HealthModule } from './common/health/health.module';
+import { MetricsModule } from './common/metrics/metrics.module';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
 import { RedisModule } from './common/redis/redis.module';
 import { RouletteModule } from './modules/roulette/roulette.module';
@@ -32,6 +34,8 @@ import { RouletteModule } from './modules/roulette/roulette.module';
       },
     ]),
     RedisModule,
+    HealthModule,
+    MetricsModule,
     RouletteModule,
   ],
   providers: [
