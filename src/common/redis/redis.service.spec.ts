@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import {
   RedisService,
   RoomConfig,
@@ -32,6 +33,11 @@ jest.mock('ioredis', () => {
   }));
 });
 
+const mockConfigService = {
+  get: jest.fn(),
+  getOrThrow: jest.fn().mockReturnValue('redis://localhost:6379'),
+};
+
 describe('RedisService', () => {
   let service: RedisService;
   let mockRedis: jest.Mocked<Redis>;
@@ -40,7 +46,13 @@ describe('RedisService', () => {
     jest.clearAllMocks();
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [RedisService],
+      providers: [
+        RedisService,
+        {
+          provide: ConfigService,
+          useValue: mockConfigService,
+        },
+      ],
     }).compile();
 
     service = module.get<RedisService>(RedisService);

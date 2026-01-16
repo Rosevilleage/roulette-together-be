@@ -1,4 +1,10 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 export interface RoomConfig {
@@ -25,6 +31,7 @@ export interface SocketInfo {
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(RedisService.name);
   private client: Redis;
   private subscriber: Redis;
   private publisher: Redis;
@@ -34,8 +41,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly SOCKET_DATA_TTL = 1000 * 60 * 60 * 2; // 2 hours (for active socket connections)
   private readonly ttl = this.SOCKET_DATA_TTL; // backward compatibility
 
+  constructor(private readonly configService: ConfigService) {}
+
   async onModuleInit(): Promise<void> {
-    const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+    this.logger.log('Connecting to Redis...');
+
+    const redisUrl = this.configService.getOrThrow<string>('REDIS_URL');
     this.client = new Redis(redisUrl, {
       retryStrategy: (times) => {
         const delay = Math.min(times * 50, 2000);
@@ -79,9 +90,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         }
       }),
     ]);
+
+    this.logger.log('Redis connection established');
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.logger.log('Closing Redis connections...');
     await this.client.quit();
     await this.subscriber.quit();
     await this.publisher.quit();

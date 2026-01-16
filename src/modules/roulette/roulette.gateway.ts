@@ -1,3 +1,4 @@
+import { Logger, UseFilters } from '@nestjs/common';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -8,6 +9,7 @@ import {
   ConnectedSocket,
   MessageBody,
 } from '@nestjs/websockets';
+import { WsAllExceptionsFilter } from '../../common/filters/ws-exception.filter';
 import { Server, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { randomBytes } from 'crypto';
@@ -27,9 +29,12 @@ import { RouletteService } from './roulette.service';
     credentials: true,
   },
 })
+@UseFilters(new WsAllExceptionsFilter())
 export class RouletteGateway
   implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
 {
+  private readonly logger = new Logger(RouletteGateway.name);
+
   @WebSocketServer()
   server!: Server;
 
@@ -81,6 +86,7 @@ export class RouletteGateway
     ]);
 
     server.adapter(createAdapter(pubClient, subClient));
+    this.logger.log('WebSocket Gateway initialized');
   }
 
   handleConnection(socket: Socket): void {
@@ -89,9 +95,11 @@ export class RouletteGateway
 
     // Store rid in socket data
     (socket as unknown as { data: { rid?: string } }).data.rid = rid;
+    this.logger.debug(`Client connected: ${socket.id}`);
   }
 
   handleDisconnect(socket: Socket): void {
+    this.logger.debug(`Client disconnected: ${socket.id}`);
     this.rouletteService.handleDisconnect(socket, this.server);
   }
 

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { randomBytes } from 'crypto';
 import { RoomJoinDto } from './dto/room-join.dto';
@@ -19,6 +19,8 @@ interface SocketWithData extends Socket {
 
 @Injectable()
 export class RouletteService {
+  private readonly logger = new Logger(RouletteService.name);
+
   constructor(private readonly redisService: RedisService) {}
 
   private getRid(socket: Socket): string | null {
@@ -41,12 +43,12 @@ export class RouletteService {
     data: RoomJoinDto,
     server: Server,
   ): Promise<void> {
-    console.log('[room:join] Received data:', JSON.stringify(data, null, 2));
-    console.log('[room:join] Data type:', typeof data);
-    console.log('[room:join] roomId:', data?.roomId, 'role:', data?.role);
+    this.logger.debug(
+      `Room join attempt: roomId=${data?.roomId}, role=${data?.role}`,
+    );
 
     if (!data?.roomId || !data?.role) {
-      console.log('[room:join] REJECTED: Missing roomId or role');
+      this.logger.warn('Room join rejected: Missing roomId or role');
       socket.emit('room:join:rejected', {
         reason: 'INVALID_REQUEST',
       });
@@ -56,10 +58,8 @@ export class RouletteService {
     const { roomId, role } = data;
     const rid = this.getRid(socket);
 
-    console.log('[room:join] Generated rid:', rid);
-
     if (!rid) {
-      console.log('[room:join] REJECTED: No rid found');
+      this.logger.warn(`Room join rejected: No rid found for room ${roomId}`);
       socket.emit('room:join:rejected', {
         reason: 'INVALID_RID',
       });
@@ -69,7 +69,6 @@ export class RouletteService {
     // Verify owner token from cookie if role is owner
     if (role === 'owner') {
       const cookies = socket.handshake.headers.cookie;
-      console.log('[room:join] Owner role - cookies:', cookies);
       let ownerTokenFromCookie: string | undefined;
 
       if (cookies) {
@@ -81,7 +80,6 @@ export class RouletteService {
             cookieObj[key] = decodeURIComponent(value);
           }
         });
-        console.log('[room:join] Parsed cookies:', cookieObj);
         const cookieValue = cookieObj[`owner_token_${roomId}`];
 
         // Parse cookie value (may contain {roomId, token} or just token for backward compatibility)
@@ -94,15 +92,12 @@ export class RouletteService {
             ownerTokenFromCookie = cookieValue;
           }
         }
-
-        console.log(
-          '[room:join] Owner token from cookie:',
-          ownerTokenFromCookie,
-        );
       }
 
       if (!ownerTokenFromCookie) {
-        console.log('[room:join] REJECTED: Missing owner token in cookie');
+        this.logger.warn(
+          `Room join rejected: Missing owner token for room ${roomId}`,
+        );
         socket.emit('room:join:rejected', {
           reason: 'MISSING_OWNER_TOKEN',
         });
@@ -111,15 +106,16 @@ export class RouletteService {
 
       // Verify token against Redis
       const storedToken = await this.redisService.getRoomOwnerToken(roomId);
-      console.log('[room:join] Stored token from Redis:', storedToken);
       if (!storedToken || storedToken !== ownerTokenFromCookie) {
-        console.log('[room:join] REJECTED: Token mismatch');
+        this.logger.warn(
+          `Room join rejected: Invalid owner token for room ${roomId}`,
+        );
         socket.emit('room:join:rejected', {
           reason: 'INVALID_OWNER_TOKEN',
         });
         return;
       }
-      console.log('[room:join] Owner token verified successfully');
+      this.logger.debug(`Owner token verified for room ${roomId}`);
     }
 
     // Determine nickname
@@ -132,7 +128,7 @@ export class RouletteService {
           initialNickname =
             await this.redisService.getInitialOwnerNickname(roomId);
         } catch (error: unknown) {
-          console.error('Error getting initial owner nickname:', error);
+          this.logger.error('Error getting initial owner nickname', error);
         }
 
         if (initialNickname) {
@@ -141,7 +137,7 @@ export class RouletteService {
           try {
             await this.redisService.removeInitialOwnerNickname(roomId);
           } catch (error: unknown) {
-            console.error('Error removing initial owner nickname:', error);
+            this.logger.error('Error removing initial owner nickname', error);
           }
         } else {
           nickname = '생성자';
@@ -397,7 +393,7 @@ export class RouletteService {
         const result = await this.redisService.getReadyParticipants(roomId);
         readyParticipants = result;
       } catch (error: unknown) {
-        console.error('Error getting ready participants:', error);
+        this.logger.error('Error getting ready participants', error);
       }
       const readySet = new Set<string>(readyParticipants);
 
@@ -524,8 +520,8 @@ export class RouletteService {
         if (role === 'owner') {
           // Owner disconnected - extend room TTL to 30 minutes
           // This allows owner to reconnect within 30 minutes
-          console.log(
-            `[handleDisconnect] Owner disconnected from room ${roomId}, extending TTL to 30 minutes`,
+          this.logger.debug(
+            `Owner disconnected from room ${roomId}, extending TTL to 30 minutes`,
           );
           await this.redisService.extendRoomTTL(roomId);
         } else {
@@ -535,7 +531,7 @@ export class RouletteService {
       }
     } catch (error: unknown) {
       // Log error but don't throw - disconnect should always succeed
-      console.error('Error in handleDisconnect:', error);
+      this.logger.error('Error in handleDisconnect', error);
     }
   }
 
@@ -588,7 +584,7 @@ export class RouletteService {
         // Update room activity timestamp
         await this.redisService.setRoomLastActivity(roomId);
       } catch (error: unknown) {
-        console.error('Error in handleReadyToggle:', error);
+        this.logger.error('Error in handleReadyToggle', error);
         socket.emit('ready:toggle:rejected', {
           roomId,
           reason: 'INTERNAL_ERROR',
@@ -640,7 +636,7 @@ export class RouletteService {
         // Update room activity timestamp
         await this.redisService.setRoomLastActivity(roomId);
       } catch (error: unknown) {
-        console.error('Error in handleNicknameChange:', error);
+        this.logger.error('Error in handleNicknameChange', error);
         socket.emit('nickname:change:rejected', {
           roomId,
           reason: 'INTERNAL_ERROR',
@@ -718,7 +714,7 @@ export class RouletteService {
       // Extend room TTL to allow owner to rejoin
       await this.redisService.extendRoomTTL(roomId);
     } catch (error: unknown) {
-      console.error('Error in handleOwnerExit:', error);
+      this.logger.error('Error in handleOwnerExit', error);
       socket.emit('room:leave:rejected', {
         roomId,
         reason: 'INTERNAL_ERROR',
@@ -745,7 +741,7 @@ export class RouletteService {
       // Leave socket.io room
       await socket.leave(roomId);
     } catch (error: unknown) {
-      console.error('Error in handleParticipantExit:', error);
+      this.logger.error('Error in handleParticipantExit', error);
       socket.emit('room:leave:rejected', {
         roomId,
         reason: 'INTERNAL_ERROR',
@@ -779,7 +775,7 @@ export class RouletteService {
       const result = await this.redisService.getReadyParticipants(roomId);
       readyParticipants = result;
     } catch (error: unknown) {
-      console.error('Error getting ready participants:', error);
+      this.logger.error('Error getting ready participants', error);
     }
     const readySet = new Set<string>(readyParticipants);
 

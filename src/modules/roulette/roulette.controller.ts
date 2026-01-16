@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Res, Get, Req } from '@nestjs/common';
+import { Controller, Logger, Post, Body, Res, Get, Req } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import type { Response, Request } from 'express';
 import { randomBytes } from 'crypto';
@@ -13,6 +13,8 @@ import {
 @ApiTags('Roulette')
 @Controller('rooms')
 export class RouletteController {
+  private readonly logger = new Logger(RouletteController.name);
+
   constructor(private readonly redisService: RedisService) {}
 
   @Post()
@@ -39,7 +41,7 @@ export class RouletteController {
     try {
       await this.redisService.setRoomTitle(roomId, roomTitle);
     } catch (error: unknown) {
-      console.error('Error setting room title:', error);
+      this.logger.error('Error setting room title', error);
     }
 
     // Store initial owner nickname (기본값: '생성자')
@@ -47,8 +49,10 @@ export class RouletteController {
     try {
       await this.redisService.setInitialOwnerNickname(roomId, ownerNickname);
     } catch (error: unknown) {
-      console.error('Error setting initial owner nickname:', error);
+      this.logger.error('Error setting initial owner nickname', error);
     }
+
+    this.logger.log(`Room created: ${roomId}`);
 
     // Initialize room config with values from DTO or defaults
     const config = {
