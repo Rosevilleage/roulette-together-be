@@ -727,6 +727,21 @@ interface RoomStore {
 - WebSocket 연결 실패 시 재연결 시도
 - API 호출 실패 시 사용자에게 알림
 - 방 입장 거부 시 사유 표시
+- **Rate Limit 에러 (429)**: `Retry-After` 헤더를 확인하여 "N초 후 다시 시도해주세요" 메시지 표시
+  ```typescript
+  // 예시: axios 인터셉터
+  axios.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.headers['retry-after'];
+        const seconds = retryAfter ? parseInt(retryAfter, 10) : 60;
+        alert(`요청이 너무 많습니다. ${seconds}초 후 다시 시도해주세요.`);
+      }
+      return Promise.reject(error);
+    }
+  );
+  ```
 
 ### 5. 반응형 디자인
 
@@ -804,7 +819,7 @@ interface RoomStore {
 
 | Method | Endpoint | Description              | Request Body                                                                                                                      | Response                                                                                                        | Notes                                                                  |
 | ------ | -------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| POST   | `/rooms` | 방 생성                  | `{ title?, nickname?, winnersCount?, winSentiment? }` | `{ roomId, title, createdAt }`                                                               | ownerToken은 HTTP-only 쿠키로 자동 설정. URL은 프론트에서 조합 |
+| POST   | `/rooms` | 방 생성                  | `{ title?, nickname?, winnersCount?, winSentiment? }` | `{ roomId, title, createdAt }`                                                               | ownerToken은 HTTP-only 쿠키로 자동 설정. URL은 프론트에서 조합. **IP당 분당 10개 제한** |
 | GET    | `/rooms` | 내가 만든 방 목록 (v2.2) | 없음 (쿠키 자동 포함)                                                                                                             | `{ rooms: [{ roomId, title, participantCount, winnersCount, winSentiment, lastActivity, ownerNickname }], queriedAt }` | 쿠키의 모든 `owner_token_*`를 파싱하여 활성 방 목록 반환               |
 
 ### WebSocket 이벤트
@@ -1090,7 +1105,17 @@ http://localhost:3001/api-docs
 8. **결과 표시**: 변경된 닉네임과 함께 당첨/낙첨 결과 표시
 9. **방 나가기**: 참가자는 방 나가기, 방장은 일시 퇴장 (참가자 연결 유지, v2.6)
 
-**백엔드는 이미 구현 완료**되었으므로 (v2.10 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+**백엔드는 이미 구현 완료**되었으므로 (v2.11 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+
+### v2.11 주요 업데이트 (2026-01-16)
+
+- ✅ Redis 기반 IP별 Rate Limiting 추가
+  - 방 생성 API: IP당 분당 10개 제한
+  - 429 응답 시 `Retry-After` 헤더에 대기 시간(초) 포함
+  - 다중 인스턴스 환경에서도 일관된 제한 적용 (Redis 저장소 사용)
+- ✅ 프록시 환경 지원
+  - `X-Forwarded-For` 헤더에서 실제 클라이언트 IP 추출
+  - Vercel, Cloudflare, Nginx 등 리버스 프록시 뒤에서도 정상 동작
 
 ### v2.10 주요 업데이트 (2026-01-16)
 
