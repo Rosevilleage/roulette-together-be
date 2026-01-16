@@ -1,4 +1,5 @@
 import { Logger, UseFilters, UseGuards } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -24,12 +25,7 @@ import type { RoomLeaveDto } from './dto/room-leave.dto';
 import { RedisService } from '../../common/redis/redis.service';
 import { RouletteService } from './roulette.service';
 
-@WebSocketGateway({
-  cors: {
-    origin: process.env.CORS_ORIGIN || '*',
-    credentials: true,
-  },
-})
+@WebSocketGateway()
 @UseFilters(new WsAllExceptionsFilter())
 @UseGuards(WsThrottlerGuard)
 export class RouletteGateway
@@ -41,11 +37,19 @@ export class RouletteGateway
   server!: Server;
 
   constructor(
+    private readonly configService: ConfigService,
     private readonly redisService: RedisService,
     private readonly rouletteService: RouletteService,
   ) {}
 
   async afterInit(server: Server): Promise<void> {
+    // Configure CORS dynamically from ConfigService
+    const corsOrigin = this.configService.get<string[]>('CORS_ORIGIN');
+    server.engine.opts.cors = {
+      origin: corsOrigin,
+      credentials: true,
+    };
+
     // Wait for Redis clients to be initialized
     const maxRetries = 50;
     let pubClient: Redis | undefined;
@@ -88,7 +92,9 @@ export class RouletteGateway
     ]);
 
     server.adapter(createAdapter(pubClient, subClient));
-    this.logger.log('WebSocket Gateway initialized');
+    this.logger.log(
+      `WebSocket Gateway initialized with CORS origins: ${JSON.stringify(corsOrigin)}`,
+    );
   }
 
   handleConnection(socket: Socket): void {

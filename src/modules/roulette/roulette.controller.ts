@@ -1,4 +1,5 @@
 import { Controller, Logger, Post, Body, Res, Get, Req } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Response, Request } from 'express';
@@ -19,8 +20,14 @@ import { parseOwnerToken } from './roulette.utils';
 })
 export class RouletteController {
   private readonly logger = new Logger(RouletteController.name);
+  private readonly isProduction: boolean;
 
-  constructor(private readonly redisService: RedisService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly redisService: RedisService,
+  ) {
+    this.isProduction = this.configService.get('NODE_ENV') === 'production';
+  }
 
   @Post()
   @Throttle({ default: { limit: 5, ttl: 60000 } }) // 분당 5개 방 생성 제한
@@ -78,7 +85,7 @@ export class RouletteController {
     const cookieValue = JSON.stringify({ roomId, token: ownerToken });
     res.cookie(`owner_token_${roomId}`, cookieValue, {
       httpOnly: true, // Prevents XSS attacks
-      secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+      secure: this.isProduction, // HTTPS only in production
       sameSite: 'lax', // CSRF protection
       maxAge: 2 * 60 * 60 * 1000, // 2 hours in milliseconds
       path: '/', // Cookie available for all paths
@@ -88,7 +95,7 @@ export class RouletteController {
     // This ensures only the same browser can reconnect as owner
     res.cookie(`rid_${roomId}`, ownerRid, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: this.isProduction,
       sameSite: 'lax',
       maxAge: 2 * 60 * 60 * 1000,
       path: '/',
