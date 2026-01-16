@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { VersioningType } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import { setupSwagger } from './utils/swagger';
@@ -8,7 +9,7 @@ import { Logger, ValidationPipe } from '@nestjs/common';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger:
       process.env.NODE_ENV === 'production'
         ? ['error', 'warn', 'log']
@@ -17,6 +18,9 @@ async function bootstrap(): Promise<void> {
 
   const logger = new Logger('Bootstrap');
   const configService = app.get(ConfigService);
+
+  // Trust proxy for correct client IP behind Vercel/Cloudflare/Nginx
+  app.set('trust proxy', true);
 
   app.use(cookieParser());
   app.enableVersioning({

@@ -30,7 +30,7 @@ export class RouletteController {
   }
 
   @Post()
-  @Throttle({ default: { limit: 5, ttl: 60000 } }) // 분당 5개 방 생성 제한
+  @Throttle({ default: { limit: 10, ttl: 60000 } }) // IP당 분당 10개 방 생성 제한
   @ApiOperation({ summary: '새로운 룰렛 방 생성' })
   @ApiResponse({
     status: 201,

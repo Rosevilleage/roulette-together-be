@@ -1,7 +1,8 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { validate } from './common/config/env.validation';
 import { HealthModule } from './common/health/health.module';
 import { MetricsModule } from './common/metrics/metrics.module';
@@ -16,23 +17,32 @@ import { RouletteModule } from './modules/roulette/roulette.module';
       isGlobal: true,
       envFilePath: ['.env.local', '.env'],
     }),
-    ThrottlerModule.forRoot([
-      {
-        name: 'short',
-        ttl: 1000, // 1초
-        limit: 10, // 10 요청
-      },
-      {
-        name: 'medium',
-        ttl: 10000, // 10초
-        limit: 50, // 50 요청
-      },
-      {
-        name: 'long',
-        ttl: 60000, // 1분
-        limit: 200, // 200 요청
-      },
-    ]),
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        throttlers: [
+          {
+            name: 'short',
+            ttl: 1000, // 1초
+            limit: 10, // 10 요청
+          },
+          {
+            name: 'medium',
+            ttl: 10000, // 10초
+            limit: 50, // 50 요청
+          },
+          {
+            name: 'long',
+            ttl: 60000, // 1분
+            limit: 200, // 200 요청
+          },
+        ],
+        storage: new ThrottlerStorageRedisService(
+          configService.getOrThrow<string>('REDIS_URL'),
+        ),
+      }),
+    }),
     RedisModule,
     HealthModule,
     MetricsModule,
