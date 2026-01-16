@@ -31,7 +31,7 @@ async function bootstrap(): Promise<void> {
   );
   setupSwagger(app);
 
-  const corsOrigin = configService.get<string>('CORS_ORIGIN');
+  const corsOrigin = configService.get<string[]>('CORS_ORIGIN');
   app.enableCors({
     origin: corsOrigin,
     credentials: true,

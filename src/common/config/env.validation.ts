@@ -1,5 +1,6 @@
 import { plainToInstance } from 'class-transformer';
 import {
+  IsArray,
   IsEnum,
   IsNumber,
   IsOptional,
@@ -7,6 +8,7 @@ import {
   Max,
   Min,
   validateSync,
+  type ValidationError,
 } from 'class-validator';
 
 enum Environment {
@@ -16,6 +18,8 @@ enum Environment {
 }
 
 export class EnvironmentVariables {
+  [key: string]: unknown;
+
   @IsEnum(Environment)
   @IsOptional()
   NODE_ENV: Environment = Environment.Development;
@@ -29,7 +33,8 @@ export class EnvironmentVariables {
   @IsString()
   REDIS_URL: string;
 
-  @IsString()
+  @IsArray()
+  @IsString({ each: true })
   @IsOptional()
   CORS_ORIGIN: string[] = ['http://localhost:5173', 'http://localhost:3000'];
 
@@ -40,12 +45,12 @@ export class EnvironmentVariables {
 
 export function validate(
   config: Record<string, unknown>,
-): EnvironmentVariables {
+): Record<string, unknown> {
   const validatedConfig = plainToInstance(EnvironmentVariables, config, {
     enableImplicitConversion: true,
   });
 
-  const errors = validateSync(validatedConfig, {
+  const errors: ValidationError[] = validateSync(validatedConfig, {
     skipMissingProperties: false,
   });
 
