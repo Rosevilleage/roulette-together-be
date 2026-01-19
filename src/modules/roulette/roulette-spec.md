@@ -98,6 +98,7 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 | `spin:request`                | 룰렛 회전 요청 (방장만 가능) | `SpinRequestDto`    |
 | `participant:ready:toggle`    | 참가자 준비 상태 토글        | `ReadyToggleDto`    |
 | `participant:nickname:change` | 참가자 닉네임 변경           | `NicknameChangeDto` |
+| `room:delete`                 | 방 삭제 (방장만 가능)        | `RoomDeleteDto`     |
 
 ---
 
@@ -257,6 +258,27 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ---
 
+##### `handleRoomDelete(socket, data, server)`
+
+**기능**: 방 삭제 (방장만 가능)
+
+**처리 흐름**:
+
+1. `rid` 검증
+2. 방장 권한 확인
+3. 모든 참가자에게 방 삭제 알림 (`room:deleted`)
+4. 모든 소켓을 방에서 퇴장
+5. 모든 소켓 정보 삭제
+6. 방의 모든 Redis 데이터 삭제
+
+**실패 시 응답**: `room:delete:rejected`
+
+- `INVALID_RID`: rid 없음
+- `NOT_OWNER`: 방장이 아님
+- `INTERNAL_ERROR`: 서버 오류
+
+---
+
 ##### `handleDisconnect(socket, server)`
 
 **기능**: 연결 종료 시 정리 작업
@@ -350,6 +372,14 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 {
   roomId: string; // 방 ID
   nickname: string; // 새로운 닉네임 (1-20자)
+}
+```
+
+#### RoomDeleteDto
+
+```typescript
+{
+  roomId: string; // 삭제할 방 ID
 }
 ```
 
@@ -535,6 +565,29 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ---
 
+#### `room:delete`
+
+**요청**:
+
+```json
+{
+  "roomId": "room-123"
+}
+```
+
+**성공 응답**: 전체 방에 `room:deleted` 이벤트 전송 후 방 데이터 삭제
+
+**실패 응답**: `room:delete:rejected`
+
+```json
+{
+  "roomId": "room-123",
+  "reason": "NOT_OWNER" // 또는 "INVALID_RID", "INTERNAL_ERROR"
+}
+```
+
+---
+
 ### 서버 → 클라이언트
 
 #### `room:joined`
@@ -701,15 +754,29 @@ WebSocket 연결 및 메시지 처리를 담당하는 게이트웨이입니다.
 
 ---
 
+#### `room:deleted`
+
+방 삭제 알림 (전체 방에 브로드캐스트)
+
+```json
+{
+  "roomId": "room-123",
+  "deletedAt": 1704729600000
+}
+```
+
+---
+
 ## 에러 처리
 
 ### 요청 거부 사유
 
-- **방 입장**: roomId/role 누락, rid 없음, 이미 방장 존재
+- **방 입장**: roomId/role 누락, rid 없음, 이미 방장 존재, 방 없음 (삭제된 방)
 - **설정 변경**: 방장 아님, winnersCount < 1
 - **스핀 요청**: 방장 아님, 중복 요청, 이미 스핀 중, 참가자 없음, 방 없음, 모든 참가자가 준비되지 않음
 - **준비 상태 토글**: 방장은 준비 상태 변경 불가
 - **닉네임 변경**: 닉네임이 비어있거나 너무 김 (1-20자)
+- **방 삭제**: 방장 아님, rid 없음
 
 ---
 
@@ -819,7 +886,7 @@ HTTP API로 방 생성 → 토큰 발급 → WebSocket 연결 시 rid 자동 생
 ## 향후 개선 사항
 
 - [ ] 방 목록 조회 API
-- [ ] 방 삭제/종료 기능
+- [x] 방 삭제/종료 기능
 - [ ] 재연결 시 상태 복구
 - [ ] 스핀 히스토리 저장 및 조회
 - [ ] 방장 위임 기능

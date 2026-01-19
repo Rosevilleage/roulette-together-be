@@ -7,6 +7,7 @@ import { SpinRequestDto } from './dto/spin-request.dto';
 import { ReadyToggleDto } from './dto/ready-toggle.dto';
 import { NicknameChangeDto } from './dto/nickname-change.dto';
 import { RoomLeaveDto } from './dto/room-leave.dto';
+import { RoomDeleteDto } from './dto/room-delete.dto';
 import { RedisService } from 'src/common/redis/redis.service';
 import { parseCookies, parseOwnerToken, selectRandom } from './roulette.utils';
 
@@ -256,6 +257,13 @@ export class RouletteService {
     roomId: string,
     providedNickname?: string,
   ): Promise<{ success: boolean; nickname?: string; reason?: string }> {
+    // Check if room exists (방이 존재하는지 확인)
+    const roomConfig = await this.redisService.getRoomConfig(roomId);
+    if (!roomConfig) {
+      this.logger.warn(`Room join rejected: Room ${roomId} does not exist`);
+      return { success: false, reason: 'ROOM_NOT_FOUND' };
+    }
+
     let nickname = providedNickname?.trim();
     if (!nickname) {
       const participantNumber =
@@ -891,6 +899,75 @@ export class RouletteService {
           allReady,
         });
       }
+    }
+  }
+
+  /**
+   * 방 삭제 처리
+   *
+   * 방장만 방을 삭제할 수 있으며, 모든 참가자를 강제 퇴장시키고
+   * 방의 모든 데이터를 삭제합니다.
+   */
+  async handleRoomDelete(
+    socket: Socket,
+    data: RoomDeleteDto,
+    server: Server,
+  ): Promise<void> {
+    const { roomId } = data;
+    const rid = this.getRid(socket);
+
+    if (!rid) {
+      socket.emit('room:delete:rejected', {
+        roomId,
+        reason: 'INVALID_RID',
+      });
+      return;
+    }
+
+    // 방장 확인
+    const ownerRid = await this.redisService.getRoomOwner(roomId);
+    if (ownerRid !== rid) {
+      socket.emit('room:delete:rejected', {
+        roomId,
+        reason: 'NOT_OWNER',
+      });
+      return;
+    }
+
+    try {
+      // 모든 참가자에게 방 삭제 알림
+      const allSocketIds = await this.redisService.getRoomMembers(roomId);
+
+      server.to(roomId).emit('room:deleted', {
+        roomId,
+        deletedAt: Date.now(),
+      });
+
+      // 모든 소켓 연결 끊기 (방장 제외)
+      for (const socketId of allSocketIds) {
+        if (socketId === socket.id) continue; // 방장은 나중에 처리
+
+        const socketInstance = server.sockets.sockets.get(socketId);
+        if (socketInstance) {
+          socketInstance.disconnect(true); // 연결 강제 종료
+        }
+        await this.redisService.removeSocketInfo(socketId);
+      }
+
+      // 방장 소켓 정보 삭제 및 방에서 퇴장
+      await this.redisService.removeSocketInfo(socket.id);
+      await socket.leave(roomId);
+
+      // 방 데이터 완전 삭제
+      await this.redisService.deleteRoom(roomId);
+
+      this.logger.log(`Room deleted: ${roomId} by owner ${rid}`);
+    } catch (error: unknown) {
+      this.logger.error('Error in handleRoomDelete', error);
+      socket.emit('room:delete:rejected', {
+        roomId,
+        reason: 'INTERNAL_ERROR',
+      });
     }
   }
 }

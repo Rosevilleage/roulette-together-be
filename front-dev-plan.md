@@ -205,7 +205,11 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 - 링크 공유 기능 (방장만)
 - 방 나가기 버튼 (v2.2)
   - 참가자: 방 나가기 (연결 종료)
-  - 방장: 방 삭제 (모든 참가자 강제 퇴장)
+  - 방장: 방 나가기 (참가자 연결 유지, 30분 후 TTL 만료)
+- 방 삭제 버튼 (v2.12, 방장만)
+  - 방장이 방을 즉시 삭제
+  - 모든 참가자 강제 연결 종료
+  - 삭제된 방에는 다시 접근 불가
 
 **WebSocket 이벤트:**
 
@@ -246,6 +250,13 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   }
   ```
 
+- `room:delete` - 방 삭제 (v2.12, 방장만)
+  ```json
+  {
+    "roomId": "room-abc123"
+  }
+  ```
+
 **수신:**
 
 - `room:joined` - 입장 완료
@@ -278,7 +289,7 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
 
   ```json
   {
-    "reason": "INVALID_REQUEST" | "INVALID_RID" | "MISSING_OWNER_TOKEN" | "INVALID_OWNER_TOKEN" | "INVALID_OWNER_RID"
+    "reason": "INVALID_REQUEST" | "INVALID_RID" | "MISSING_OWNER_TOKEN" | "INVALID_OWNER_TOKEN" | "INVALID_OWNER_RID" | "ROOM_NOT_FOUND"
   }
   ```
 
@@ -288,6 +299,7 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   - `INVALID_OWNER_RID`: 쿠키의 rid가 저장된 방장 rid와 불일치 (다른 브라우저에서 탈취한 쿠키로 접근 시도)
   - `INVALID_REQUEST`: 필수 파라미터 누락
   - `INVALID_RID`: 서버에서 생성한 rid가 없음
+  - `ROOM_NOT_FOUND`: 존재하지 않는 방 (삭제됨 또는 TTL 만료, v2.12)
 
 - `room:participants` - 참가자 리스트 (방장에게만 전송)
 
@@ -402,19 +414,47 @@ spin:result 이벤트 수신 (방 전체, 모든 참가자 결과)
   - 이 이벤트를 받으면 자동으로 연결이 끊김 (서버에서 disconnect 처리)
   - 프론트엔드에서는 "다른 곳에서 접속하여 연결이 종료되었습니다" 메시지 표시 권장
 
-- `room:closed` - 방 삭제됨 (TTL 만료 또는 명시적 삭제 시)
+- `room:closed` - 방 삭제됨 (TTL 만료 시)
 
   ```json
   {
     "roomId": "room-abc123",
-    "reason": "EXPIRED" | "DELETED",
+    "reason": "EXPIRED",
     "closedAt": 1673456789000
   }
   ```
 
   **설명:**
-  - 방이 완전히 삭제될 때만 전송됨 (TTL 만료 등)
+  - 방이 TTL 만료로 삭제될 때 전송됨
   - 참가자는 이 이벤트를 받으면 자동으로 메인 화면으로 이동
+
+- `room:deleted` - 방장이 방 삭제 (v2.12)
+
+  ```json
+  {
+    "roomId": "room-abc123",
+    "deletedAt": 1673456789000
+  }
+  ```
+
+  **설명:**
+  - 방장이 `room:delete` 요청 시 모든 참가자에게 전송
+  - 참가자의 WebSocket 연결이 강제 종료됨
+  - 삭제된 방에는 다시 접근 불가
+
+- `room:delete:rejected` - 방 삭제 거부 (v2.12)
+
+  ```json
+  {
+    "roomId": "room-abc123",
+    "reason": "NOT_OWNER" | "INVALID_RID" | "INTERNAL_ERROR"
+  }
+  ```
+
+  **Rejection Reasons:**
+  - `NOT_OWNER`: 방장이 아님
+  - `INVALID_RID`: rid가 없음
+  - `INTERNAL_ERROR`: 서버 오류
 
 ---
 
@@ -811,6 +851,42 @@ interface RoomStore {
 - `room:leave:rejected` 수신 시 에러 메시지 표시
 - 네트워크 오류 시 재시도 옵션 제공
 
+### 9. 방 삭제 처리 (v2.12 신규)
+
+**방 삭제 버튼 (방장만):**
+
+- 방장 화면에 [방 삭제] 버튼 표시 (방 나가기와 별도)
+- 클릭 시 경고 다이얼로그 표시
+  - "방을 삭제하시겠습니까? 모든 참가자의 연결이 끊기고 방이 영구 삭제됩니다."
+
+**방 삭제 흐름:**
+
+1. `room:delete` 이벤트 전송 `{ roomId }`
+2. 서버가 모든 참가자에게 `room:deleted` 이벤트 브로드캐스트
+3. 모든 참가자의 WebSocket 연결 강제 종료
+4. 방 데이터 Redis에서 즉시 삭제
+5. 방장 화면 메인으로 이동
+
+**참가자의 방 삭제 알림 처리:**
+
+1. `room:deleted` 이벤트 수신
+2. 토스트로 "방장이 방을 삭제했습니다." 알림 표시
+3. WebSocket 연결이 자동으로 끊김
+4. 메인 화면으로 자동 이동
+
+**삭제된 방 재접근 시:**
+
+- 삭제된 roomId로 `room:join` 시도 시 `room:join:rejected` 수신
+- reason: `ROOM_NOT_FOUND`
+- "존재하지 않는 방입니다" 메시지 표시 후 메인 화면으로 이동
+
+**에러 처리:**
+
+- `room:delete:rejected` 수신 시 에러 메시지 표시
+  - `NOT_OWNER`: "방장만 방을 삭제할 수 있습니다"
+  - `INVALID_RID`: "잘못된 요청입니다"
+  - `INTERNAL_ERROR`: "서버 오류가 발생했습니다"
+
 ---
 
 ## API 엔드포인트
@@ -834,6 +910,7 @@ interface RoomStore {
 | `participant:ready:toggle`    | `{ roomId, ready }`                      | 준비 상태 토글 (v2.1)   |
 | `participant:nickname:change` | `{ roomId, nickname }`                   | 닉네임 변경 (v2.1)      |
 | `room:leave`                  | `{ roomId }`                             | 방 나가기 (v2.2)        |
+| `room:delete`                 | `{ roomId }`                             | 방 삭제 (v2.12, 방장만) |
 
 #### Server → Client
 
@@ -853,7 +930,9 @@ interface RoomStore {
 | `room:leave:rejected`      | `{ roomId, reason }`                                                              | 방 나가기 거부 (v2.2)      | 본인      |
 | `room:owner:left`          | `{ roomId, leftAt }`                                                              | 방장 나감 (v2.6)           | 방 전체   |
 | `room:owner:replaced`      | `{ roomId, reason }`                                                              | 방장 연결 교체됨 (v2.10)   | 기존 방장 |
-| `room:closed`              | `{ roomId, reason, closedAt }`                                                    | 방 삭제됨 (TTL 만료 등)    | 방 전체   |
+| `room:closed`              | `{ roomId, reason, closedAt }`                                                    | 방 삭제됨 (TTL 만료)       | 방 전체   |
+| `room:deleted`             | `{ roomId, deletedAt }`                                                           | 방 삭제됨 (v2.12)          | 방 전체   |
+| `room:delete:rejected`     | `{ roomId, reason }`                                                              | 방 삭제 거부 (v2.12)       | 본인      |
 | `spin:resolved`            | `{ roomId, requestId, spinId, winnersCount, winSentiment, decidedAt, animation }` | 스핀 시작                  | 방 전체   |
 | `spin:outcome`             | `{ roomId, spinId, outcome, winSentiment }`                                       | 개인 결과                  | 본인      |
 | `spin:result`              | `{ roomId, spinId, outcomes }`                                                    | 전체 결과                  | 방 전체   |
@@ -1104,8 +1183,20 @@ http://localhost:3001/api-docs
 7. **룰렛 스핀**: 방장이 스핀 요청, 모든 참가자에게 결과 전달
 8. **결과 표시**: 변경된 닉네임과 함께 당첨/낙첨 결과 표시
 9. **방 나가기**: 참가자는 방 나가기, 방장은 일시 퇴장 (참가자 연결 유지, v2.6)
+10. **방 삭제**: 방장이 방을 즉시 삭제, 모든 참가자 강제 퇴장 (v2.12)
 
-**백엔드는 이미 구현 완료**되었으므로 (v2.11 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+**백엔드는 이미 구현 완료**되었으므로 (v2.12 기준), 프론트엔드는 이 문서를 참고하여 개발하시면 됩니다.
+
+### v2.12 주요 업데이트 (2026-01-19)
+
+- ✅ 방 삭제 기능 추가
+  - `room:delete` 이벤트로 방장이 방을 즉시 삭제
+  - 모든 참가자의 WebSocket 연결 강제 종료 (`disconnect(true)`)
+  - 삭제된 방에 재접근 시 `ROOM_NOT_FOUND` 에러 반환
+  - 방장은 삭제 후 연결 유지 (메인 화면으로 이동)
+- ✅ 방 존재 여부 검증 강화
+  - 참가자가 존재하지 않는 방에 join 시도 시 `ROOM_NOT_FOUND` 에러
+  - TTL 만료되거나 삭제된 방에 대한 접근 차단
 
 ### v2.11 주요 업데이트 (2026-01-16)
 
