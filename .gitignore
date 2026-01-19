@@ -37,10 +37,31 @@ lerna-debug.log*
 
 # dotenv environment variable files
 .env
+.env.*
+!.env.example
 .env.development.local
 .env.test.local
 .env.production.local
 .env.local
+
+# Secrets and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets/
+credentials/
+**/secrets.*
+**/credentials.*
+*.secret
+*.secrets
+
+# API keys and tokens
+.api-keys
+api-keys.json
+tokens.json
 
 # temp directory
 .temp
@@ -57,3 +78,34 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 /generated/prisma
 /.claude
+
+# Docker
+docker-compose.override.yml
+docker-compose.local.yml
+docker-compose.prod.yml
+docker-compose.production.yml
+.docker/
+
+# Debug and profiling
+*.heapsnapshot
+*.cpuprofile
+.clinic/
+
+# Local development
+local/
+*.local.json
+*.local.ts
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+dump.rdb
+
+# Documentation (generated/local)
+docs/
