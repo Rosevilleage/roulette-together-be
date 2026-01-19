@@ -425,16 +425,28 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   // Extend room TTL to 30 minutes (when owner disconnects)
   async extendRoomTTL(roomId: string): Promise<void> {
     const ttlSeconds = Math.floor(this.ROOM_DATA_TTL / 1000);
+
+    // First, get all members to sync their socket TTL
+    const members = await this.getRoomMembers(roomId);
+
     const pipeline = this.client.pipeline();
 
-    // Extend TTL for all room-related keys
+    // Extend TTL for all room-related keys (must be synchronized)
     pipeline.expire(`room:config:${roomId}`, ttlSeconds);
     pipeline.expire(`room:owner:${roomId}`, ttlSeconds);
     pipeline.expire(`room:owner:token:${roomId}`, ttlSeconds);
+    pipeline.expire(`room:owner:initial-nickname:${roomId}`, ttlSeconds);
     pipeline.expire(`room:title:${roomId}`, ttlSeconds);
     pipeline.expire(`room:participant:counter:${roomId}`, ttlSeconds);
     pipeline.expire(`room:state:${roomId}`, ttlSeconds);
     pipeline.expire(`room:lastActivity:${roomId}`, ttlSeconds);
+    pipeline.expire(`room:members:${roomId}`, ttlSeconds);
+    pipeline.expire(`room:ready:${roomId}`, ttlSeconds);
+
+    // Sync socket TTL with room TTL
+    for (const socketId of members) {
+      pipeline.expire(`room:socket:${socketId}`, ttlSeconds);
+    }
 
     await pipeline.exec();
   }
@@ -454,8 +466,14 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
     // Get all members and check if any of them is the owner
     const members = await this.getRoomMembers(roomId);
+    if (members.length === 0) {
+      return null;
+    }
+
+    // Use batch query to avoid N+1 problem
+    const socketInfoMap = await this.getSocketInfoBatch(members);
     for (const socketId of members) {
-      const socketInfo = await this.getSocketInfo(socketId);
+      const socketInfo = socketInfoMap.get(socketId);
       if (socketInfo && socketInfo.rid === ownerRid) {
         return socketId;
       }
