@@ -31,8 +31,8 @@ export function parseCookies(cookieHeader: string): Record<string, string> {
   return cookies;
 }
 
-// 토큰 형식: 32자리 hex 문자열
-const TOKEN_PATTERN = /^[a-f0-9]{32}$/;
+// 토큰 형식: 64자리 hex 문자열 (randomBytes(32) = 32바이트 = 64자리 hex)
+const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
 
 /**
  * Parse owner token from cookie value
