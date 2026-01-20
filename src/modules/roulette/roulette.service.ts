@@ -19,6 +19,9 @@ interface SocketWithData extends Socket {
   };
 }
 
+// rid 형식: 32자리 hex 문자열
+const RID_PATTERN = /^[a-f0-9]{32}$/;
+
 /**
  * 룰렛 게임 비즈니스 로직 서비스
  *
@@ -52,8 +55,11 @@ export class RouletteService {
   }
 
   private getRole(socket: Socket): 'owner' | 'participant' | null {
-    const role = (socket as SocketWithData).data.role;
-    return role === 'owner' || role === 'participant' ? role : null;
+    const data = (socket as SocketWithData).data;
+    if (!data || typeof data.role !== 'string') return null;
+    return data.role === 'owner' || data.role === 'participant'
+      ? data.role
+      : null;
   }
 
   async handleRoomJoin(
@@ -181,6 +187,15 @@ export class RouletteService {
 
     // rid 쿠키와 저장된 방장 rid 일치 여부 확인
     const ridFromCookie = cookieObj[`rid_${roomId}`];
+
+    // rid 형식 검증 (보안 강화)
+    if (ridFromCookie && !RID_PATTERN.test(ridFromCookie)) {
+      this.logger.warn(
+        `Room join rejected: invalid rid format for room ${roomId}`,
+      );
+      return { valid: false, reason: 'INVALID_RID_FORMAT' };
+    }
+
     const storedOwnerRid = await this.redisService.getRoomOwner(roomId);
 
     if (storedOwnerRid && ridFromCookie && ridFromCookie !== storedOwnerRid) {
@@ -416,12 +431,12 @@ export class RouletteService {
       return;
     }
 
-    // Check idempotency
+    // Check idempotency (명시적 null 검사)
     const existingSpinId = await this.redisService.checkIdempotency(
       roomId,
       requestId,
     );
-    if (existingSpinId) {
+    if (existingSpinId !== null) {
       socket.emit('spin:rejected', {
         roomId,
         requestId,

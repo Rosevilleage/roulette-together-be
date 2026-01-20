@@ -5,8 +5,10 @@ import {
   IsNumber,
   IsInt,
   Min,
+  Max,
   IsEnum,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { WinSentiment } from './room-config-set.dto';
 
@@ -41,9 +43,11 @@ export class CreateRoomDto {
     default: 1,
   })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @IsInt()
   @Min(1)
+  @Max(100)
   winnersCount?: number;
 
   @ApiProperty({

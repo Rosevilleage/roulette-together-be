@@ -5,8 +5,10 @@ import {
   IsNumber,
   IsInt,
   Min,
+  Max,
   IsEnum,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export enum WinSentiment {
   POSITIVE = 'POSITIVE',
@@ -27,9 +29,11 @@ export class RoomConfigSetDto {
     example: 3,
     minimum: 1,
   })
+  @Type(() => Number)
   @IsNumber()
   @IsInt()
   @Min(1)
+  @Max(100)
   winnersCount: number;
 
   @ApiProperty({

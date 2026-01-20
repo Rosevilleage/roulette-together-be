@@ -13,6 +13,9 @@ import {
 } from './dto/get-rooms-response.dto';
 import { parseOwnerToken } from './roulette.utils';
 
+// roomId 형식: 'room-' + 16자리 hex 문자열
+const ROOM_ID_PATTERN = /^room-[a-f0-9]{16}$/;
+
 @ApiTags('Roulette')
 @Controller({
   path: 'rooms',
@@ -150,6 +153,11 @@ export class RouletteController {
       }
 
       const roomId = cookieName.replace('owner_token_', '');
+      // roomId 형식 검증 (경로 순회 방지)
+      if (!ROOM_ID_PATTERN.test(roomId)) {
+        continue;
+      }
+
       const token = parseOwnerToken(cookieValue);
       if (token) {
         ownerTokens[roomId] = token;

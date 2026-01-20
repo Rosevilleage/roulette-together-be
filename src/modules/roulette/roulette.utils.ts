@@ -31,6 +31,9 @@ export function parseCookies(cookieHeader: string): Record<string, string> {
   return cookies;
 }
 
+// 토큰 형식: 32자리 hex 문자열
+const TOKEN_PATTERN = /^[a-f0-9]{32}$/;
+
 /**
  * Parse owner token from cookie value
  * Supports both new format ({roomId, token}) and old format (plain token)
@@ -41,11 +44,21 @@ export function parseOwnerToken(cookieValue: string): string | undefined {
   }
 
   try {
-    const parsed = JSON.parse(cookieValue) as { token: string };
-    return parsed.token;
+    const parsed: unknown = JSON.parse(cookieValue);
+    // 명시적 구조 검증
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'token' in parsed &&
+      typeof (parsed as { token: unknown }).token === 'string'
+    ) {
+      const token = (parsed as { token: string }).token;
+      return TOKEN_PATTERN.test(token) ? token : undefined;
+    }
+    return undefined;
   } catch {
-    // Old format (plain token) - backward compatibility
-    return cookieValue;
+    // 레거시 호환: 일반 문자열 토큰
+    return TOKEN_PATTERN.test(cookieValue) ? cookieValue : undefined;
   }
 }
 

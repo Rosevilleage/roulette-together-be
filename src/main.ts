@@ -34,7 +34,7 @@ async function bootstrap(): Promise<void> {
       forbidNonWhitelisted: true, // DTO에 없는 속성이 있으면 에러
       transform: true, // 요청 데이터를 DTO 인스턴스로 자동 변환
       transformOptions: {
-        enableImplicitConversion: true, // 타입 자동 변환
+        enableImplicitConversion: false, // 명시적 타입 변환만 허용 (보안 강화)
       },
     }),
   );

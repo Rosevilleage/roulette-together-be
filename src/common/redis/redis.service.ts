@@ -399,7 +399,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async getRoomLastActivity(roomId: string): Promise<number | null> {
     const timestamp = await this.client.get(`room:lastActivity:${roomId}`);
-    return timestamp ? parseInt(timestamp, 10) : null;
+    if (!timestamp) return null;
+    const num = Number(timestamp);
+    return Number.isSafeInteger(num) ? num : null;
   }
 
   // Full room deletion (owner exit)

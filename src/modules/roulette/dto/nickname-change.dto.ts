@@ -1,7 +1,8 @@
-import { IsString, MinLength, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, MinLength, MaxLength } from 'class-validator';
 
 export class NicknameChangeDto {
   @IsString()
+  @IsNotEmpty()
   roomId!: string;
 
   @IsString()
