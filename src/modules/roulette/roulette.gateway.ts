@@ -26,7 +26,14 @@ import type { RoomDeleteDto } from './dto/room-delete.dto';
 import { RedisService } from '../../common/redis/redis.service';
 import { RouletteService } from './roulette.service';
 
-@WebSocketGateway()
+@WebSocketGateway({
+  transports: ['websocket', 'polling'],
+  path: '/socket.io/',
+  pingInterval: 25000,
+  pingTimeout: 60000,
+  allowUpgrades: true,
+  perMessageDeflate: false, // ALB compatibility
+})
 @UseFilters(new WsAllExceptionsFilter())
 @UseGuards(WsThrottlerGuard)
 export class RouletteGateway

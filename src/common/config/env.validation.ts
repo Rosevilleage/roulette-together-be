@@ -1,6 +1,7 @@
 import { plainToInstance, Transform } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsEnum,
   IsNumber,
   IsOptional,
@@ -53,6 +54,21 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   FRONTEND_URL: string = 'http://localhost:3000';
+
+  // Redis TLS/AUTH settings for ElastiCache
+  @IsString()
+  @IsOptional()
+  REDIS_PASSWORD?: string;
+
+  @Transform(({ value }: { value: unknown }) => {
+    if (typeof value === 'string') {
+      return value === 'true' || value === '1';
+    }
+    return Boolean(value);
+  })
+  @IsBoolean()
+  @IsOptional()
+  REDIS_TLS: boolean = false;
 }
 
 export function validate(

@@ -5,7 +5,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Redis from 'ioredis';
+import Redis, { RedisOptions } from 'ioredis';
 
 export interface RoomConfig {
   winnersCount: number;
@@ -59,24 +59,29 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     this.logger.log('Connecting to Redis...');
 
     const redisUrl = this.configService.getOrThrow<string>('REDIS_URL');
-    this.client = new Redis(redisUrl, {
+    const redisPassword = this.configService.get<string>('REDIS_PASSWORD');
+    const redisTls = this.configService.get<boolean>('REDIS_TLS') ?? false;
+
+    // Build Redis options for production (ElastiCache) support
+    const baseOptions: RedisOptions = {
       retryStrategy: (times) => {
         const delay = Math.min(times * 50, 2000);
         return delay;
       },
-    });
-    this.subscriber = new Redis(redisUrl, {
-      retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      },
-    });
-    this.publisher = new Redis(redisUrl, {
-      retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      },
-    });
+      // Production-grade connection settings
+      connectTimeout: 10000,
+      maxRetriesPerRequest: 3,
+      enableReadyCheck: true,
+      lazyConnect: false,
+      // AUTH token for ElastiCache
+      ...(redisPassword && { password: redisPassword }),
+      // TLS for ElastiCache encryption in transit
+      ...(redisTls && { tls: {} }),
+    };
+
+    this.client = new Redis(redisUrl, baseOptions);
+    this.subscriber = new Redis(redisUrl, baseOptions);
+    this.publisher = new Redis(redisUrl, baseOptions);
 
     // Wait for all Redis clients to be ready
     await Promise.all([

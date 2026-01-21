@@ -1,7 +1,16 @@
 import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
-export function setupSwagger(app: INestApplication): void {
+export function setupSwagger(
+  app: INestApplication,
+  configService: ConfigService,
+): void {
+  const frontendUrl =
+    configService.get<string>('FRONTEND_URL') ?? 'http://localhost:3000';
+  const wsProtocol = frontendUrl.startsWith('https') ? 'wss' : 'ws';
+  const wsUrl = frontendUrl.replace(/^https?/, wsProtocol);
+
   const config = new DocumentBuilder()
     .setTitle('🎰 Rullette Together API')
     .setDescription(
@@ -16,7 +25,7 @@ export function setupSwagger(app: INestApplication): void {
 
 ### WebSocket 연결
 WebSocket 이벤트는 이 Swagger UI에서 문서화되지 않습니다.
-WebSocket 연결: \`ws://localhost:3000\`
+WebSocket 연결: \`${wsUrl}\`
 
 **사용 가능한 이벤트:**
 - \`room:join\` - 방 입장
