@@ -20,11 +20,18 @@ export class HealthController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: '서버 헬스 체크' })
-  @ApiResponse({ status: 200, description: '서버가 정상 상태' })
-  @ApiResponse({ status: 503, description: '서버가 비정상 상태' })
-  @HealthCheck()
+  @ApiOperation({ summary: 'ALB 헬스체크 (항상 200)' })
+  @ApiResponse({ status: 200, description: '서버가 실행 중' })
   check() {
+    return { ok: true };
+  }
+
+  @Get('deps')
+  @ApiOperation({ summary: '의존성 상태 체크 (Redis/Memory)' })
+  @ApiResponse({ status: 200, description: '모든 의존성 정상' })
+  @ApiResponse({ status: 503, description: '일부 의존성 비정상' })
+  @HealthCheck()
+  deps() {
     return this.health.check([
       () => this.redis.isHealthy('redis'),
       () => this.memory.checkHeap('memory_heap', 150 * 1024 * 1024), // 150MB
