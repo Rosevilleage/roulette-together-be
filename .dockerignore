@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+*.md
+.husky
+coverage
+.vscode
+.idea
+*.log
+npm-debug.log*
+.DS_Store
+test
+*.spec.ts
+jest.config.*

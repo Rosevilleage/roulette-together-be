@@ -109,3 +109,7 @@ dump.rdb
 
 # Documentation (generated/local)
 docs/
+
+# AWS
+.aws/
+Dockerfile
