@@ -47,7 +47,7 @@ async function bootstrap(): Promise<void> {
   });
 
   const port = configService.get<number>('PORT') ?? 8080;
-  await app.listen(port);
-  logger.log(`Application is running on port ${port}`);
+  await app.listen(port, '0.0.0.0');
+  logger.log(`LISTENING ${port}`);
 }
 bootstrap();

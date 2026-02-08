@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Logger } from '@nestjs/common';
 import {
   HealthCheck,
   HealthCheckService,
@@ -13,6 +13,8 @@ import { RedisHealthIndicator } from './redis.health';
   version: '',
 })
 export class HealthController {
+  private readonly logger = new Logger(HealthController.name);
+
   constructor(
     private health: HealthCheckService,
     private redis: RedisHealthIndicator,
@@ -23,6 +25,7 @@ export class HealthController {
   @ApiOperation({ summary: 'ALB 헬스체크 (항상 200)' })
   @ApiResponse({ status: 200, description: '서버가 실행 중' })
   check() {
+    this.logger.log('Health check endpoint called: GET /health');
     return { ok: true };
   }
 
@@ -42,6 +45,7 @@ export class HealthController {
   @ApiOperation({ summary: 'Liveness probe (쿠버네티스)' })
   @ApiResponse({ status: 200, description: '서버가 실행 중' })
   liveness() {
+    this.logger.log('Liveness check endpoint called: GET /health/live');
     return { status: 'ok' };
   }
 
@@ -50,7 +54,8 @@ export class HealthController {
   @ApiResponse({ status: 200, description: '서버가 요청을 처리할 준비 완료' })
   @ApiResponse({ status: 503, description: '서버가 요청을 처리할 준비가 안됨' })
   @HealthCheck()
-  readiness() {
+  async readiness() {
+    this.logger.log('Readiness check endpoint called: GET /health/ready');
     return this.health.check([() => this.redis.isHealthy('redis')]);
   }
 }
