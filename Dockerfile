@@ -8,15 +8,15 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 # Install curl for ECS health check
 RUN apk add --no-cache curl
 
-# Copy package files and install dependencies
+# Copy package files and install ALL dependencies (including dev for build)
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --ignore-scripts --prod
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # Copy source and build
 COPY . .
 RUN pnpm run build
 
-# Remove dev dependencies to reduce image size
+# Remove dev dependencies and reinstall production only
 RUN rm -rf node_modules && pnpm install --frozen-lockfile --ignore-scripts --prod
 
 EXPOSE 8080
