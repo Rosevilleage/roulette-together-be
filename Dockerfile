@@ -21,6 +21,10 @@ RUN rm -rf node_modules && pnpm install --frozen-lockfile --ignore-scripts --pro
 
 EXPOSE 8080
 
+# Health check for container readiness
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
+  CMD curl -f http://127.0.0.1:8080/health || exit 1
+
 # Set Node.js memory limit for 1GB Fargate Task (80% = 800MB)
 # This prevents OOM kills by keeping heap within container limits
 # For 2GB Task, use: --max-old-space-size=1600
