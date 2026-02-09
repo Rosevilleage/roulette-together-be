@@ -14,6 +14,27 @@ services:
       timeout: 3s
       retries: 5
 
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rullette-app
+    environment:
+      NODE_ENV: production
+      PORT: '8080'
+      # Docker Compose 내부에서 서비스명으로 연결
+      REDIS_URL: 'redis://redis:6379'
+      # 프론트엔드 URL (필요시 수정)
+      FRONTEND_URL: 'http://localhost:3000'
+      # CORS 설정 (필요시 수정)
+      CORS_ORIGIN: '["http://localhost:3000"]'
+    ports:
+      - '8080:8080'
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   redis_data:
     driver: local
