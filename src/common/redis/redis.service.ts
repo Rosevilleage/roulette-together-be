@@ -65,11 +65,19 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     // Build Redis options for production (ElastiCache) support
     const baseOptions: RedisOptions = {
       retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
+        // Retry up to 5 times with exponential backoff
+        if (times > 5) {
+          this.logger.warn(
+            `Redis connection retry limit reached (${times} attempts)`,
+          );
+          return null; // Stop retrying after 5 attempts
+        }
+        const delay = Math.min(times * 100, 2000);
         return delay;
       },
       // Production-grade connection settings
-      connectTimeout: 10000,
+      connectTimeout: 3000, // Reduced to 3 seconds for faster failure detection
+      commandTimeout: 1000, // 1 second timeout for commands
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
       lazyConnect: false,
@@ -83,32 +91,63 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     this.subscriber = new Redis(redisUrl, baseOptions);
     this.publisher = new Redis(redisUrl, baseOptions);
 
-    // Wait for all Redis clients to be ready
-    await Promise.all([
-      new Promise<void>((resolve) => {
-        if (this.client.status === 'ready') {
-          resolve();
-        } else {
-          this.client.once('ready', () => resolve());
-        }
-      }),
-      new Promise<void>((resolve) => {
-        if (this.subscriber.status === 'ready') {
-          resolve();
-        } else {
-          this.subscriber.once('ready', () => resolve());
-        }
-      }),
-      new Promise<void>((resolve) => {
-        if (this.publisher.status === 'ready') {
-          resolve();
-        } else {
-          this.publisher.once('ready', () => resolve());
-        }
-      }),
-    ]);
+    // Add error handlers to prevent app crash on Redis connection failure
+    this.client.on('error', (err) => {
+      this.logger.error(`Redis client error: ${err.message}`);
+    });
+    this.subscriber.on('error', (err) => {
+      this.logger.error(`Redis subscriber error: ${err.message}`);
+    });
+    this.publisher.on('error', (err) => {
+      this.logger.error(`Redis publisher error: ${err.message}`);
+    });
 
-    this.logger.log('Redis connection established');
+    // Wait for all Redis clients to be ready with timeout
+    const connectionTimeout = 5000; // 5 seconds total wait
+    try {
+      await Promise.race([
+        Promise.all([
+          new Promise<void>((resolve) => {
+            if (this.client.status === 'ready') {
+              resolve();
+            } else {
+              this.client.once('ready', () => resolve());
+            }
+          }),
+          new Promise<void>((resolve) => {
+            if (this.subscriber.status === 'ready') {
+              resolve();
+            } else {
+              this.subscriber.once('ready', () => resolve());
+            }
+          }),
+          new Promise<void>((resolve) => {
+            if (this.publisher.status === 'ready') {
+              resolve();
+            } else {
+              this.publisher.once('ready', () => resolve());
+            }
+          }),
+        ]),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Redis connection timeout')),
+            connectionTimeout,
+          ),
+        ),
+      ]);
+
+      this.logger.log('Redis connection established');
+    } catch (error) {
+      this.logger.error(
+        `Failed to connect to Redis: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+      this.logger.warn(
+        'App will continue running, but Redis-dependent features will fail',
+      );
+      // Don't throw - let the app start even if Redis is down
+      // Health checks will report the Redis status
+    }
   }
 
   async onModuleDestroy(): Promise<void> {

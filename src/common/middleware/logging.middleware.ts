@@ -7,6 +7,16 @@ export class LoggingMiddleware implements NestMiddleware {
 
   use(req: Request, res: Response, next: NextFunction) {
     const { method, originalUrl, ip } = req;
+
+    // Skip logging for health check endpoints to avoid any potential hang
+    if (
+      originalUrl.startsWith('/health') ||
+      originalUrl.startsWith('/metrics')
+    ) {
+      next();
+      return;
+    }
+
     const userAgent = req.get('user-agent') || '';
     const startTime = Date.now();
 

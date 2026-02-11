@@ -1,9 +1,9 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
-import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { validate } from './common/config/env.validation';
+import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard';
 import { HealthModule } from './common/health/health.module';
 import { MetricsModule } from './common/metrics/metrics.module';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
@@ -17,31 +17,28 @@ import { RouletteModule } from './modules/roulette/roulette.module';
       isGlobal: true,
       envFilePath: ['.env.local', '.env'],
     }),
-    ThrottlerModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        throttlers: [
-          {
-            name: 'short',
-            ttl: 1000, // 1초
-            limit: 10, // 10 요청
-          },
-          {
-            name: 'medium',
-            ttl: 10000, // 10초
-            limit: 50, // 50 요청
-          },
-          {
-            name: 'long',
-            ttl: 60000, // 1분
-            limit: 200, // 200 요청
-          },
-        ],
-        storage: new ThrottlerStorageRedisService(
-          configService.getOrThrow<string>('REDIS_URL'),
-        ),
-      }),
+    ThrottlerModule.forRoot({
+      throttlers: [
+        {
+          name: 'short',
+          ttl: 1000, // 1초
+          limit: 10, // 10 요청
+        },
+        {
+          name: 'medium',
+          ttl: 10000, // 10초
+          limit: 50, // 50 요청
+        },
+        {
+          name: 'long',
+          ttl: 60000, // 1분
+          limit: 200, // 200 요청
+        },
+      ],
+      // Use in-memory storage (default) instead of Redis
+      // This prevents health check hangs when Redis is unavailable
+      // For multi-instance deployments, consider using Redis storage with proper timeouts
+      // storage: new ThrottlerStorageRedisService(redisUrl),
     }),
     RedisModule,
     HealthModule,
@@ -51,7 +48,7 @@ import { RouletteModule } from './modules/roulette/roulette.module';
   providers: [
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: CustomThrottlerGuard, // Custom guard that skips /health* and /metrics*
     },
   ],
 })

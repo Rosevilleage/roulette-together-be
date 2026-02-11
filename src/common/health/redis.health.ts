@@ -14,10 +14,10 @@ export class RedisHealthIndicator extends HealthIndicator {
 
   async isHealthy(key: string): Promise<HealthIndicatorResult> {
     try {
-      // 1초 타임아웃으로 Redis ping 수행
+      // 500ms 타임아웃으로 Redis ping 수행 (빠른 실패)
       const pingPromise = this.ping();
       const timeoutPromise = new Promise<boolean>((_, reject) =>
-        setTimeout(() => reject(new Error('Redis ping timeout')), 1000),
+        setTimeout(() => reject(new Error('Redis ping timeout')), 500),
       );
 
       const isConnected = await Promise.race([pingPromise, timeoutPromise]);
