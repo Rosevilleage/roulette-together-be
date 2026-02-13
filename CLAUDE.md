@@ -146,12 +146,45 @@ Owner's `spin:request` will be rejected (`spin:rejected` with reason `NOT_ALL_RE
 Configured in `RouletteGateway.afterInit()` with retry logic (max 50 attempts, 100ms delay). Required for multi-instance deployments. Uses separate subscriber and publisher Redis clients.
 
 ### Validation
-Global ValidationPipe configured in [main.ts](src/main.ts:10-19) with:
+Global ValidationPipe configured in [main.ts](src/main.ts) with:
 - `whitelist: true` - Strip non-DTO properties
 - `forbidNonWhitelisted: true` - Reject requests with extra properties
 - `transform: true` - Auto-transform types
+- `exceptionFactory` - Custom factory for user-friendly Korean validation messages with field-level details
+
+Validation messages are mapped in [src/common/utils/validation-message.ts](src/common/utils/validation-message.ts) to provide context-specific Korean error messages for each DTO field and constraint type.
 
 ### Error Handling Patterns
+
+#### HTTP API Error Response Format
+All HTTP errors return a standardized JSON format:
+```typescript
+{
+  statusCode: number;        // HTTP status code
+  errorCode: string;         // Custom error code (UPPER_SNAKE_CASE)
+  message: string;           // User-friendly Korean message
+  timestamp: string;         // ISO 8601 timestamp
+  path?: string;             // Request path
+  details?: Record<string, unknown>;  // Additional details (optional)
+}
+```
+
+**Global Exception Filters** (registered in [main.ts](src/main.ts)):
+- `ThrottlerExceptionFilter` - Handles rate limit errors (429) with Korean messages
+- `AllExceptionsFilter` - Catches all HTTP exceptions with standardized format
+
+**Custom Validation Messages**: ValidationPipe configured with `exceptionFactory` to transform class-validator errors into user-friendly Korean messages with field-level details.
+
+**Room Creation Error Codes** (see [docs/api/ERROR_RESPONSES.md](docs/api/ERROR_RESPONSES.md)):
+- `INVALID_TITLE_LENGTH` - Room title exceeds 50 characters
+- `INVALID_NICKNAME_LENGTH` - Nickname exceeds 20 characters
+- `INVALID_WINNERS_COUNT` - Winners count out of range (1-100)
+- `INVALID_WIN_SENTIMENT` - Invalid win sentiment value
+- `RATE_LIMIT_EXCEEDED` - Too many requests (10/min per IP)
+- `DATABASE_ERROR` - Redis operation failure
+- `ROOM_CREATION_FAILED` - General room creation failure
+
+#### WebSocket Error Response Format
 WebSocket errors emit `{event}:rejected` with `reason` field. Common rejection reasons:
 - `INVALID_REQUEST`, `INVALID_RID` - Missing required data
 - `MISSING_OWNER_TOKEN` - Owner cookie not provided during WebSocket connection

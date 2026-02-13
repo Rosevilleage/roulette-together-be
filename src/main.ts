@@ -1,12 +1,22 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { VersioningType } from '@nestjs/common';
+import {
+  VersioningType,
+  Logger,
+  ValidationPipe,
+  BadRequestException,
+} from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { ValidationError } from 'class-validator';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import { setupSwagger } from './utils/swagger';
-import { Logger, ValidationPipe } from '@nestjs/common';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
+import { ThrottlerExceptionFilter } from './common/filters/throttler-exception.filter';
+import {
+  getValidationMessage,
+  getValidationErrorCode,
+} from './common/utils/validation-message';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -27,7 +37,11 @@ async function bootstrap(): Promise<void> {
     type: VersioningType.URI,
     defaultVersion: '1',
   });
-  app.useGlobalFilters(new AllExceptionsFilter());
+  // ThrottlerExceptionFilter를 먼저 등록하여 429 에러를 우선 처리
+  app.useGlobalFilters(
+    new ThrottlerExceptionFilter(),
+    new AllExceptionsFilter(),
+  );
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true, // DTO에 정의되지 않은 속성 제거
@@ -35,6 +49,25 @@ async function bootstrap(): Promise<void> {
       transform: true, // 요청 데이터를 DTO 인스턴스로 자동 변환
       transformOptions: {
         enableImplicitConversion: false, // 명시적 타입 변환만 허용 (보안 강화)
+      },
+      exceptionFactory: (errors: ValidationError[]) => {
+        // Validation 에러를 사용자 친화적인 한글 메시지로 변환
+        const firstError = errors[0];
+        const field = firstError.property;
+        const constraints = firstError.constraints || {};
+
+        const message = getValidationMessage(field, constraints);
+        const errorCode = getValidationErrorCode(field, constraints);
+
+        return new BadRequestException({
+          errorCode,
+          message,
+          details: {
+            field,
+            constraints: Object.keys(constraints),
+            value: firstError.value as unknown,
+          },
+        });
       },
     }),
   );

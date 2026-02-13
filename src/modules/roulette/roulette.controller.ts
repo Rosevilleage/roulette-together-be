@@ -12,6 +12,7 @@ import {
   type RoomSummary,
 } from './dto/get-rooms-response.dto';
 import { parseOwnerToken } from './roulette.utils';
+import { DatabaseErrorException } from '../../common/exceptions/room.exception';
 
 // roomId 형식: 'room-' + 16자리 hex 문자열
 const ROOM_ID_PATTERN = /^room-[a-f0-9]{16}$/;
@@ -52,69 +53,67 @@ export class RouletteController {
     // Generate owner rid for reconnection verification
     const ownerRid = randomBytes(16).toString('hex');
 
-    // Store owner token in Redis
-    await this.redisService.setRoomOwnerToken(roomId, ownerToken);
-
-    // Store room title (기본값: '룰렛 방')
-    const roomTitle = createRoomDto.title?.trim() || '룰렛 방';
     try {
+      // Store owner token in Redis
+      await this.redisService.setRoomOwnerToken(roomId, ownerToken);
+
+      // Store room title (기본값: '룰렛 방')
+      const roomTitle = createRoomDto.title?.trim() || '룰렛 방';
       await this.redisService.setRoomTitle(roomId, roomTitle);
-    } catch (error: unknown) {
-      this.logger.error('Error setting room title', error);
-    }
 
-    // Store initial owner nickname (기본값: '생성자')
-    const ownerNickname = createRoomDto.nickname?.trim() || '생성자';
-    try {
+      // Store initial owner nickname (기본값: '생성자')
+      const ownerNickname = createRoomDto.nickname?.trim() || '생성자';
       await this.redisService.setInitialOwnerNickname(roomId, ownerNickname);
+
+      // Initialize room config with values from DTO or defaults
+      const config = {
+        winnersCount: createRoomDto.winnersCount ?? 1,
+        winSentiment: (createRoomDto.winSentiment ?? 'POSITIVE') as
+          | 'POSITIVE'
+          | 'NEGATIVE',
+        updatedAt: Date.now(),
+      };
+      await this.redisService.setRoomConfig(roomId, config);
+
+      // Store owner rid in Redis (방장의 rid를 미리 설정)
+      await this.redisService.setRoomOwner(roomId, ownerRid);
+
+      // Initialize room activity timestamp
+      await this.redisService.setRoomLastActivity(roomId);
+
+      this.logger.log(`Room created: ${roomId}`);
+
+      // Set owner token in secure HTTP-only cookie with roomId
+      // Cookie expires in 2 hours (same as Redis TTL)
+      const cookieValue = JSON.stringify({ roomId, token: ownerToken });
+      res.cookie(`owner_token_${roomId}`, cookieValue, {
+        httpOnly: true, // Prevents XSS attacks
+        secure: this.isProduction, // HTTPS only in production
+        sameSite: 'lax', // CSRF protection
+        maxAge: 2 * 60 * 60 * 1000, // 2 hours in milliseconds
+        path: '/', // Cookie available for all paths
+      });
+
+      // Set owner rid cookie for reconnection verification
+      // This ensures only the same browser can reconnect as owner
+      res.cookie(`rid_${roomId}`, ownerRid, {
+        httpOnly: true,
+        secure: this.isProduction,
+        sameSite: 'lax',
+        maxAge: 2 * 60 * 60 * 1000,
+        path: '/',
+      });
+
+      return {
+        roomId,
+        title: roomTitle,
+        createdAt: Date.now(),
+      };
     } catch (error: unknown) {
-      this.logger.error('Error setting initial owner nickname', error);
+      this.logger.error(`Failed to create room ${roomId}`, error);
+      // Redis 작업 중 하나라도 실패하면 DatabaseErrorException 발생
+      throw new DatabaseErrorException('createRoom');
     }
-
-    this.logger.log(`Room created: ${roomId}`);
-
-    // Initialize room config with values from DTO or defaults
-    const config = {
-      winnersCount: createRoomDto.winnersCount ?? 1,
-      winSentiment: (createRoomDto.winSentiment ?? 'POSITIVE') as
-        | 'POSITIVE'
-        | 'NEGATIVE',
-      updatedAt: Date.now(),
-    };
-    await this.redisService.setRoomConfig(roomId, config);
-
-    // Set owner token in secure HTTP-only cookie with roomId
-    // Cookie expires in 2 hours (same as Redis TTL)
-    const cookieValue = JSON.stringify({ roomId, token: ownerToken });
-    res.cookie(`owner_token_${roomId}`, cookieValue, {
-      httpOnly: true, // Prevents XSS attacks
-      secure: this.isProduction, // HTTPS only in production
-      sameSite: 'lax', // CSRF protection
-      maxAge: 2 * 60 * 60 * 1000, // 2 hours in milliseconds
-      path: '/', // Cookie available for all paths
-    });
-
-    // Set owner rid cookie for reconnection verification
-    // This ensures only the same browser can reconnect as owner
-    res.cookie(`rid_${roomId}`, ownerRid, {
-      httpOnly: true,
-      secure: this.isProduction,
-      sameSite: 'lax',
-      maxAge: 2 * 60 * 60 * 1000,
-      path: '/',
-    });
-
-    // Store owner rid in Redis (방장의 rid를 미리 설정)
-    await this.redisService.setRoomOwner(roomId, ownerRid);
-
-    // Initialize room activity timestamp
-    await this.redisService.setRoomLastActivity(roomId);
-
-    return {
-      roomId,
-      title: roomTitle,
-      createdAt: Date.now(),
-    };
   }
 
   @Get()
