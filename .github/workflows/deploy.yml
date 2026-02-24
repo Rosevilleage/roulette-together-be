@@ -1,0 +1,27 @@
+# deploy-low-cost 브랜치 push 시 EC2에서 scripts/deploy.sh 자동 실행
+# 필수 Secrets: EC2_HOST, EC2_USER, EC2_SSH_KEY
+
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [deploy-low-cost]
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stderr: true
+          script: |
+            cd ~/rullette-together-be || exit 1
+            bash scripts/deploy.sh
+      - name: Notify on failure
+        if: failure()
+        run: echo "::error::Deploy failed. Check the job logs and EC2 app logs."
