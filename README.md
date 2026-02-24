@@ -25,12 +25,14 @@ WebSocket 기반 실시간 동기화, Redis 분산 상태 관리, 동시성 제�
 여러 사용자가 URL 하나로 같은 방에 입장해 실시간으로 룰렛을 돌리는 웹 게임 백엔드입니다.
 
 **핵심 플로우**:
+
 1. 방장이 HTTP API로 방 생성 → `ownerToken`이 HTTP-only 쿠키로 발급
 2. 방장·참가자 모두 WebSocket으로 방 입장 → 실시간 참가자 목록 동기화
 3. 모든 참가자가 준비 완료 → 방장이 스핀 요청
 4. 서버가 Fisher-Yates 셔플로 승패 결정 → 전원에게 동시 브로드캐스트
 
 **주요 기능**:
+
 - WebSocket 기반 실시간 양방향 통신 (Socket.IO)
 - Role 기반 권한 제어 (방장 / 참가자)
 - 분산 락을 통한 중복 스핀 방지
@@ -41,16 +43,16 @@ WebSocket 기반 실시간 동기화, Redis 분산 상태 관리, 동시성 제�
 
 ## 기술 스택
 
-| 구분 | 기술 |
-|------|------|
-| 프레임워크 | NestJS 11 |
-| 런타임 | Node.js 22 |
-| 언어 | TypeScript 5.7 |
-| 실시간 통신 | Socket.IO 4.8 + Redis Adapter |
-| 상태 저장소 | Redis (IORedis 5.9) |
-| 컨테이너 | Docker + Docker Compose |
-| 리버스 프록시 | Nginx |
-| 패키지 매니저 | pnpm |
+| 구분          | 기술                          |
+| ------------- | ----------------------------- |
+| 프레임워크    | NestJS 11                     |
+| 런타임        | Node.js 22                    |
+| 언어          | TypeScript 5.7                |
+| 실시간 통신   | Socket.IO 4.8 + Redis Adapter |
+| 상태 저장소   | Redis (IORedis 5.9)           |
+| 컨테이너      | Docker + Docker Compose       |
+| 리버스 프록시 | Nginx                         |
+| 패키지 매니저 | pnpm                          |
 
 ---
 
@@ -122,6 +124,7 @@ WebSocket 연결마다 해당 방 안에서만 유효한 식별자 `rid`를 생�
 ```
 
 **운영 비용 (월 기준)**:
+
 - ECS Fargate: ~$30
 - ElastiCache (cache.t3.micro): ~$41
 - ALB: ~$20
@@ -155,19 +158,20 @@ WebSocket 연결마다 해당 방 안에서만 유효한 식별자 `rid`를 생�
 ```
 
 **운영 비용 (월 기준)**:
+
 - EC2 t4g.small: ~$12
 - EBS (20GB): ~$2
 - **합계: 약 $14/월**
 
 **트레이드오프**:
 
-| 항목 | ALB + ECS + ElastiCache | EC2 단일 인스턴스 |
-|------|-------------------------|-------------------|
-| 월 비용 | ~$120–150 | ~$14 |
-| 가용성 | 고가용성 (다중 AZ) | 단일 장애점 |
-| 확장성 | 자동 수평 확장 | 수동 스케일업만 가능 |
-| Redis 안정성 | 관리형 (자동 백업, 장애조치) | 직접 관리 (EBS 스냅샷) |
-| 운영 부담 | 낮음 | 높음 (패치, 백업 직접 관리) |
+| 항목         | ALB + ECS + ElastiCache      | EC2 단일 인스턴스           |
+| ------------ | ---------------------------- | --------------------------- |
+| 월 비용      | ~$120–150                    | ~$14                        |
+| 가용성       | 고가용성 (다중 AZ)           | 단일 장애점                 |
+| 확장성       | 자동 수평 확장               | 수동 스케일업만 가능        |
+| Redis 안정성 | 관리형 (자동 백업, 장애조치) | 직접 관리 (EBS 스냅샷)      |
+| 운영 부담    | 낮음                         | 높음 (패치, 백업 직접 관리) |
 
 > 트래픽이 증가하거나 SLA 요구사항이 생기면 기존 ECS 아키텍처로 복귀가 가능합니다.
 > 코드 수준에서 Redis Adapter 등 수평 확장 구조는 그대로 유지하고 있습니다.
@@ -203,25 +207,25 @@ src/
 
 **Client → Server**:
 
-| 이벤트 | 설명 | 권한 |
-|--------|------|------|
-| `room:join` | 방 입장 (role 지정) | 모두 |
-| `room:config:set` | 방 설정 변경 | 방장만 |
-| `participant:ready:toggle` | 준비 상태 토글 | 참가자만 |
-| `participant:nickname:change` | 닉네임 변경 | 모두 |
-| `spin:request` | 스핀 요청 | 방장만, 전원 준비 시 |
+| 이벤트                        | 설명                | 권한                 |
+| ----------------------------- | ------------------- | -------------------- |
+| `room:join`                   | 방 입장 (role 지정) | 모두                 |
+| `room:config:set`             | 방 설정 변경        | 방장만               |
+| `participant:ready:toggle`    | 준비 상태 토글      | 참가자만             |
+| `participant:nickname:change` | 닉네임 변경         | 모두                 |
+| `spin:request`                | 스핀 요청           | 방장만, 전원 준비 시 |
 
 **Server → Client**:
 
-| 이벤트 | 설명 | 대상 |
-|--------|------|------|
-| `room:joined` | 입장 확인 (isOwner, rid, nickname) | 입장한 클라이언트 |
-| `room:config` | 방 설정 동기화 | 방 전체 브로드캐스트 |
-| `room:participants` | 참가자 목록·준비 상태 | 방장만 |
-| `spin:resolved` | 스핀 시작, 애니메이션 타이밍 | 방 전체 브로드캐스트 |
-| `spin:outcome` | 개인 WIN/LOSE 결과 | 각 클라이언트 개별 전송 |
-| `spin:result` | 전체 결과 (닉네임 포함) | 방 전체 브로드캐스트 |
-| `{event}:rejected` | 요청 거절 (reason 코드 포함) | 요청한 클라이언트 |
+| 이벤트              | 설명                               | 대상                    |
+| ------------------- | ---------------------------------- | ----------------------- |
+| `room:joined`       | 입장 확인 (isOwner, rid, nickname) | 입장한 클라이언트       |
+| `room:config`       | 방 설정 동기화                     | 방 전체 브로드캐스트    |
+| `room:participants` | 참가자 목록·준비 상태              | 방장만                  |
+| `spin:resolved`     | 스핀 시작, 애니메이션 타이밍       | 방 전체 브로드캐스트    |
+| `spin:outcome`      | 개인 WIN/LOSE 결과                 | 각 클라이언트 개별 전송 |
+| `spin:result`       | 전체 결과 (닉네임 포함)            | 방 전체 브로드캐스트    |
+| `{event}:rejected`  | 요청 거절 (reason 코드 포함)       | 요청한 클라이언트       |
 
 ---
 
@@ -437,22 +441,22 @@ NODE_MAX_OLD_SPACE=1200              # t4g.small 기준 (MB)
 
 ### 헬스체크 엔드포인트
 
-| 엔드포인트 | 확인 항목 |
-|-----------|-----------|
-| `GET /health` | Redis 연결 + 메모리 힙 (150MB 임계값) |
-| `GET /health/live` | 프로세스 생존 여부 |
-| `GET /health/ready` | Redis 연결 가능 여부 |
+| 엔드포인트          | 확인 항목                             |
+| ------------------- | ------------------------------------- |
+| `GET /health`       | Redis 연결 + 메모리 힙 (150MB 임계값) |
+| `GET /health/live`  | 프로세스 생존 여부                    |
+| `GET /health/ready` | Redis 연결 가능 여부                  |
 
 ### Prometheus 메트릭 (`GET /metrics`)
 
-| 메트릭 | 설명 |
-|--------|------|
-| `http_requests_total` | HTTP 요청 수 (method, route, status) |
-| `http_request_duration_seconds` | 요청 처리 시간 히스토그램 |
-| `websocket_connections_active` | 활성 WebSocket 연결 수 |
-| `websocket_events_total` | WebSocket 이벤트 처리 수 |
-| `active_rooms_total` | 활성 방 수 |
-| `spins_total` | 총 스핀 횟수 |
+| 메트릭                          | 설명                                 |
+| ------------------------------- | ------------------------------------ |
+| `http_requests_total`           | HTTP 요청 수 (method, route, status) |
+| `http_request_duration_seconds` | 요청 처리 시간 히스토그램            |
+| `websocket_connections_active`  | 활성 WebSocket 연결 수               |
+| `websocket_events_total`        | WebSocket 이벤트 처리 수             |
+| `active_rooms_total`            | 활성 방 수                           |
+| `spins_total`                   | 총 스핀 횟수                         |
 
 ---
 
@@ -460,4 +464,3 @@ NODE_MAX_OLD_SPACE=1200              # t4g.small 기준 (MB)
 
 - [Roulette 모듈 명세](src/modules/roulette/roulette-spec.md)
 - [Redis 키·TTL 명세](src/common/redis/redis-spec.md)
-- [에러 코드 목록](docs/api/ERROR_RESPONSES.md)
