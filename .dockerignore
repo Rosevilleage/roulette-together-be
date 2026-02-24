@@ -21,8 +21,11 @@ test
 *.spec.ts
 jest.config.*
 eslint.config.mjs
-docker-compose.yml
+docker-compose*.yml
 docs
 Dockerfile
 .dockerignore
+nginx
+scripts
+.env.example
 

@@ -1,0 +1,22 @@
+upstream app_backend {
+  server app:8080;
+  keepalive 32;
+}
+
+# HTTP: certbot 인증 + HTTPS 리다이렉트
+# init-ssl.sh 실행 전에는 이 파일을 app.conf 로 복사해서 사용합니다.
+# cp nginx/conf.d/app.conf.example nginx/conf.d/app.conf
+server {
+  listen 80;
+  server_name _;
+
+  location /.well-known/acme-challenge/ {
+    root /var/www/certbot;
+  }
+
+  location / {
+    return 301 https://$host$request_uri;
+  }
+}
+
+# HTTPS 블록은 init-ssl.sh 실행 후 app.conf 에 자동으로 추가됩니다.

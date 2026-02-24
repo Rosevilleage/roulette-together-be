@@ -21,6 +21,11 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f redis",
+    "prod:up": "docker compose --env-file .env.prod -f docker-compose.prod.yml up -d",
+    "prod:down": "docker compose --env-file .env.prod -f docker-compose.prod.yml down",
+    "prod:build": "docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build",
+    "prod:logs": "docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f",
+    "prod:ps": "docker compose --env-file .env.prod -f docker-compose.prod.yml ps",
     "prepare": "husky"
   },
   "dependencies": {

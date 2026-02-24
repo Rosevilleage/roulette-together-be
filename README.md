@@ -1,449 +1,463 @@
-# 🎰 Rullette Together
+# Rullette Together
 
-실시간 다중 사용자 룰렛 게임 백엔드 서버
+실시간 멀티플레이 룰렛 게임 백엔드 서버
 
-## 📋 프로젝트 소개
+WebSocket 기반 실시간 동기화, Redis 분산 상태 관리, 동시성 제어를 다루는 NestJS 백엔드 프로젝트입니다.
 
-Rullette Together는 여러 사용자가 함께 참여할 수 있는 실시간 룰렛 게임 시스템입니다. WebSocket을 통한 실시간 통신과 Redis를 활용한 분산 아키텍처로 확장 가능한 멀티플레이 환경을 제공합니다.
+---
 
-### 주요 기능
+## 목차
 
-- 🎯 **실시간 룰렛 게임**: Socket.IO를 통한 실시간 양방향 통신
-- 🏠 **방 기반 시스템**: HTTP API로 방 생성, WebSocket으로 실시간 참여
-- 👥 **멀티플레이 지원**: Redis Pub/Sub을 활용한 다중 서버 환경 지원
-- 👤 **닉네임 관리**: 자동 생성 또는 커스텀 닉네임 지원
-- 🔐 **권한 관리**: Role 기반 (방장/참가자) 권한 제어
-- ⚡ **분산 락**: Redis를 통한 동시성 제어 및 중복 요청 방지
-- 🎲 **커스터마이징**: 승자 수, 승리/패배 감정 설정 가능
+- [프로젝트 소개](#프로젝트-소개)
+- [기술 스택](#기술-스택)
+- [핵심 설계 결정](#핵심-설계-결정)
+- [배포 아키텍처](#배포-아키텍처)
+- [시스템 구조](#시스템-구조)
+- [API 명세](#api-명세)
+- [로컬 개발 환경](#로컬-개발-환경)
+- [프로덕션 배포](#프로덕션-배포)
+- [모니터링](#모니터링)
 
-### 기술 스택
+---
 
-- **프레임워크**: NestJS 11
-- **실시간 통신**: Socket.IO 4.8 with Redis Adapter
-- **데이터베이스**: Redis (IORedis 5.9)
-- **언어**: TypeScript 5.7
-- **런타임**: Node.js 22
-- **패키지 매니저**: pnpm
+## 프로젝트 소개
 
-## 🚀 시작하기
+여러 사용자가 URL 하나로 같은 방에 입장해 실시간으로 룰렛을 돌리는 웹 게임 백엔드입니다.
 
-### 사전 요구사항
+**핵심 플로우**:
+1. 방장이 HTTP API로 방 생성 → `ownerToken`이 HTTP-only 쿠키로 발급
+2. 방장·참가자 모두 WebSocket으로 방 입장 → 실시간 참가자 목록 동기화
+3. 모든 참가자가 준비 완료 → 방장이 스핀 요청
+4. 서버가 Fisher-Yates 셔플로 승패 결정 → 전원에게 동시 브로드캐스트
 
-- Node.js 22.x 이상
-- pnpm 8.x 이상
-- Docker & Docker Compose (Redis 실행용)
+**주요 기능**:
+- WebSocket 기반 실시간 양방향 통신 (Socket.IO)
+- Role 기반 권한 제어 (방장 / 참가자)
+- 분산 락을 통한 중복 스핀 방지
+- 멱등성 키로 재시도 안전성 보장
+- 수평 확장을 위한 Redis Pub/Sub 구조
 
-### 설치
+---
 
-```bash
-# 의존성 설치
-pnpm install
+## 기술 스택
+
+| 구분 | 기술 |
+|------|------|
+| 프레임워크 | NestJS 11 |
+| 런타임 | Node.js 22 |
+| 언어 | TypeScript 5.7 |
+| 실시간 통신 | Socket.IO 4.8 + Redis Adapter |
+| 상태 저장소 | Redis (IORedis 5.9) |
+| 컨테이너 | Docker + Docker Compose |
+| 리버스 프록시 | Nginx |
+| 패키지 매니저 | pnpm |
+
+---
+
+## 핵심 설계 결정
+
+### 1. Redis를 단일 상태 저장소로 사용
+
+별도 DB 없이 Redis 하나로 모든 게임 상태를 관리합니다. 세션 데이터 특성상 영속성보다 TTL 기반 자동 만료와 빠른 읽기·쓰기가 더 중요했기 때문입니다. 방 데이터에 2시간 TTL을 걸어 만료된 게임 상태를 자동으로 정리합니다.
+
+```
+room:config:{roomId}          # 방 설정 (TTL 2h)
+room:members:{roomId}         # 소켓 ID Set
+room:ready:{roomId}           # 준비 완료 참가자 Set
+room:socket:{socketId}        # 소켓 메타데이터 (roomId, rid, nickname, role)
+lock:spin:{roomId}            # 스핀 분산 락 (TTL 10s)
+idem:spin:{roomId}:{requestId} # 멱등성 키 (TTL 30s)
 ```
 
-### 환경 설정
+### 2. 분산 락으로 동시 스핀 방지
 
-프로젝트 루트에 `.env` 파일을 생성하고 아래 내용을 입력하세요:
+여러 클라이언트가 동시에 스핀을 요청하거나 네트워크 지연으로 같은 요청이 재전송될 때를 대비해 두 가지 안전장치를 적용했습니다.
 
-```bash
-# 서버 설정
-PORT=3000
-NODE_ENV=development
+- **분산 락**: `SET NX PX`로 락 획득, Lua 스크립트로 atomic 해제 → 동시 스핀 원천 차단
+- **멱등성 키**: `requestId` 기반 Redis 캐시 → 클라이언트 재시도 시 중복 처리 방지
 
-# CORS 설정
-CORS_ORIGIN=http://localhost:5173
+### 3. HTTP-only 쿠키로 방장 인증
 
-# Redis 설정
-REDIS_URL=redis://localhost:6379
+방 생성 시 발급한 `ownerToken`을 HTTP-only 쿠키에 저장해 XSS로 인한 토큰 탈취를 방지합니다. WebSocket 연결 시 쿠키를 자동으로 전달받아 방장 권한을 검증합니다.
 
-# 프론트엔드 URL (방 생성 시 사용)
-FRONTEND_URL=http://localhost:3000
+### 4. rid (Room-scoped User ID)
+
+WebSocket 연결마다 해당 방 안에서만 유효한 식별자 `rid`를 생성합니다. 전역 사용자 계정 없이도 방 내 사용자를 식별하고 권한을 제어할 수 있습니다.
+
+### 5. Socket.IO Redis Adapter로 수평 확장 지원
+
+단일 인스턴스에서도 코드 변경 없이 다중 인스턴스로 확장 가능하도록 Socket.IO Redis Adapter를 처음부터 적용했습니다. 인스턴스 간 WebSocket 이벤트 브로드캐스트를 Redis Pub/Sub으로 처리합니다.
+
+---
+
+## 배포 아키텍처
+
+### 초기 구성: ALB + ECS Fargate + ElastiCache
+
+프로젝트 초기에는 AWS 관리형 서비스로 수평 확장을 고려한 아키텍처로 배포했습니다.
+
+```
+                          Internet
+                              │
+                              ▼
+                 ┌─────────────────────┐
+                 │  AWS ALB            │  SSL 종료, 고가용성 로드밸런싱
+                 │  (sticky session)   │  Socket.IO를 위한 Sticky Session 필수
+                 └──────────┬──────────┘
+                            │
+               ┌────────────┴────────────┐
+               ▼                         ▼
+   ┌───────────────────┐     ┌───────────────────┐
+   │  ECS Fargate      │     │  ECS Fargate      │   ... N tasks
+   │  NestJS App       │     │  NestJS App       │
+   └─────────┬─────────┘     └─────────┬─────────┘
+             │                         │
+             └────────────┬────────────┘
+                          │
+                          ▼
+             ┌─────────────────────────┐
+             │  AWS ElastiCache        │  관리형 Redis
+             │  (Redis OSS)            │  자동 장애조치, 백업 내장
+             └─────────────────────────┘
 ```
 
-### Redis 실행
+**운영 비용 (월 기준)**:
+- ECS Fargate: ~$30
+- ElastiCache (cache.t3.micro): ~$41
+- ALB: ~$20
+- 기타 (NAT Gateway, ECR 등): ~$30–60
+- **합계: 약 $120–150/월**
 
-Docker Compose를 사용하여 Redis를 실행합니다:
+### 현재 구성: 단일 EC2 인스턴스 (비용 최적화)
 
-```bash
-# Redis 컨테이너 시작
-pnpm run docker:up
+서비스 초기 단계에서 관리형 서비스의 고정 비용이 과했습니다. 트래픽 규모 대비 가용성 요구사항을 재검토한 결과, 단일 EC2에 App + Redis를 함께 올리는 구성으로 전환했습니다.
 
-# Redis 상태 확인
-docker compose ps
-
-# Redis 로그 확인
-pnpm run docker:logs
-
-# Redis 컨테이너 중지
-pnpm run docker:down
+```
+                          Internet
+                              │
+                              ▼
+              ┌───────────────────────────┐
+              │  EC2 (t4g.small, ~$12/월) │
+              │                           │
+              │  ┌─────────────────────┐  │
+              │  │  Nginx (80/443)     │  │  SSL 종료, 리버스 프록시
+              │  └──────────┬──────────┘  │
+              │             │             │
+              │  ┌──────────▼──────────┐  │
+              │  │  NestJS App (:8080) │  │  외부 직접 접근 불가
+              │  └──────────┬──────────┘  │
+              │             │             │
+              │  ┌──────────▼──────────┐  │
+              │  │  Redis (:6379)      │  │  Docker 내부 네트워크만 접근 가능
+              │  │  (Docker, 127.0.0.1)│  │  포트 외부 노출 없음
+              │  └─────────────────────┘  │
+              └───────────────────────────┘
 ```
 
-### 애플리케이션 실행
+**운영 비용 (월 기준)**:
+- EC2 t4g.small: ~$12
+- EBS (20GB): ~$2
+- **합계: 약 $14/월**
 
-```bash
-# 개발 모드 (일반)
-pnpm run start
+**트레이드오프**:
 
-# 개발 모드 (watch - 파일 변경 시 자동 재시작)
-pnpm run start:dev
+| 항목 | ALB + ECS + ElastiCache | EC2 단일 인스턴스 |
+|------|-------------------------|-------------------|
+| 월 비용 | ~$120–150 | ~$14 |
+| 가용성 | 고가용성 (다중 AZ) | 단일 장애점 |
+| 확장성 | 자동 수평 확장 | 수동 스케일업만 가능 |
+| Redis 안정성 | 관리형 (자동 백업, 장애조치) | 직접 관리 (EBS 스냅샷) |
+| 운영 부담 | 낮음 | 높음 (패치, 백업 직접 관리) |
 
-# 디버그 모드
-pnpm run start:debug
+> 트래픽이 증가하거나 SLA 요구사항이 생기면 기존 ECS 아키텍처로 복귀가 가능합니다.
+> 코드 수준에서 Redis Adapter 등 수평 확장 구조는 그대로 유지하고 있습니다.
 
-# 프로덕션 빌드
-pnpm run build
+---
 
-# 프로덕션 실행
-pnpm run start:prod
+## 시스템 구조
+
+```
+src/
+├── main.ts                          # 진입점, ValidationPipe, CORS, Swagger 설정
+├── app.module.ts                    # 루트 모듈
+├── common/
+│   ├── config/env.validation.ts     # 환경변수 유효성 검증 (class-validator)
+│   ├── filters/                     # 전역 예외 필터 (HTTP, Throttler)
+│   ├── guards/                      # 인증 가드
+│   ├── health/                      # /health, /health/live, /health/ready
+│   ├── metrics/                     # /metrics (Prometheus)
+│   ├── middleware/                  # HTTP 로깅 미들웨어
+│   └── redis/
+│       ├── redis.service.ts         # Redis 연산 추상화
+│       └── redis-spec.md            # Redis 키·TTL·메서드 명세
+└── modules/
+    └── roulette/
+        ├── roulette.controller.ts   # POST /rooms
+        ├── roulette.gateway.ts      # Socket.IO 이벤트 핸들러
+        ├── roulette.service.ts      # 게임 비즈니스 로직
+        ├── roulette-spec.md         # WebSocket 이벤트 명세
+        └── dto/                     # 요청·응답 DTO (class-validator)
 ```
 
-## 📡 API 명세
+### WebSocket 이벤트 흐름
 
-### Swagger API 문서
+**Client → Server**:
 
-애플리케이션 실행 후 다음 URL에서 대화형 API 문서를 확인할 수 있습니다:
+| 이벤트 | 설명 | 권한 |
+|--------|------|------|
+| `room:join` | 방 입장 (role 지정) | 모두 |
+| `room:config:set` | 방 설정 변경 | 방장만 |
+| `participant:ready:toggle` | 준비 상태 토글 | 참가자만 |
+| `participant:nickname:change` | 닉네임 변경 | 모두 |
+| `spin:request` | 스핀 요청 | 방장만, 전원 준비 시 |
 
-**Swagger UI**: `http://localhost:3000/api`
+**Server → Client**:
 
-Swagger UI에서 다음을 할 수 있습니다:
+| 이벤트 | 설명 | 대상 |
+|--------|------|------|
+| `room:joined` | 입장 확인 (isOwner, rid, nickname) | 입장한 클라이언트 |
+| `room:config` | 방 설정 동기화 | 방 전체 브로드캐스트 |
+| `room:participants` | 참가자 목록·준비 상태 | 방장만 |
+| `spin:resolved` | 스핀 시작, 애니메이션 타이밍 | 방 전체 브로드캐스트 |
+| `spin:outcome` | 개인 WIN/LOSE 결과 | 각 클라이언트 개별 전송 |
+| `spin:result` | 전체 결과 (닉네임 포함) | 방 전체 브로드캐스트 |
+| `{event}:rejected` | 요청 거절 (reason 코드 포함) | 요청한 클라이언트 |
 
-- 모든 REST API 엔드포인트 확인
-- API 요청/응답 스키마 확인
-- 직접 API 테스트 실행
-- 쿠키 인증 테스트
+---
 
-> **참고**: WebSocket 이벤트는 Swagger에서 문서화되지 않습니다. WebSocket API는 아래 섹션을 참고하세요.
+## API 명세
 
 ### REST API
 
 #### 방 생성
 
 ```http
-POST /rooms
+POST /v1/rooms
+Content-Type: application/json
+
+{
+  "title": "팀 회식 룰렛",       // 필수, 최대 50자
+  "nickname": "주최자",          // 선택, 최대 20자
+  "winnersCount": 3,             // 선택, 1~100 (기본: 1)
+  "winSentiment": "POSITIVE"     // 선택, POSITIVE | NEGATIVE (기본: POSITIVE)
+}
 ```
 
-응답:
-
 ```json
+// 응답 201
 {
-  "roomId": "room-abc123def456",
-  "ownerToken": "token-xyz...",
-  "ownerUrl": "http://localhost:3000/room/room-abc123def456?role=owner&token=token-xyz...",
-  "participantUrl": "http://localhost:3000/room/room-abc123def456?role=participant",
+  "roomId": "room-abc123",
+  "ownerUrl": "https://your-frontend.com/room/room-abc123?role=owner",
+  "participantUrl": "https://your-frontend.com/room/room-abc123",
   "createdAt": 1704729600000
 }
 ```
 
-- `ownerUrl`: 방장용 입장 링크 (토큰 포함)
-- `participantUrl`: 참가자용 입장 링크 (공유용)
+`ownerToken`은 HTTP-only 쿠키(`owner_token_{roomId}`)로 발급됩니다. 응답 본문에 포함되지 않습니다.
 
-### WebSocket Events
+#### 헬스체크
 
-서버 주소: `ws://localhost:3000` (기본값)
+```http
+GET /health         # 전체 상태 (Redis + 메모리)
+GET /health/live    # Liveness: 프로세스 생존 여부
+GET /health/ready   # Readiness: Redis 연결 가능 여부
+```
 
-#### 인증
-
-- 연결 시 자동으로 rid 생성 (방 내에서만 유효한 유저 ID)
-- 쿠키 인증 불필요
-
-#### 이벤트
-
-##### 1. 방 입장
+### WebSocket
 
 ```typescript
-// Client -> Server
+// 방 입장
 socket.emit('room:join', {
   roomId: string,
-  role: 'owner' | 'participant',  // 역할
-  nickname?: string               // 선택 (없으면 "참가자 N" 자동 생성)
+  role: 'owner' | 'participant',
+  nickname?: string,
 });
 
-// Server -> Client (성공)
-socket.on('room:joined', (data) => {
-  roomId: string,
-  serverTime: number,
-  you: {
-    isOwner: boolean,
-    nickname: string,
-    rid: string
-  }
-});
-
-// Server -> Client (실패)
-socket.on('room:join:rejected', (data) => {
-  reason: 'INVALID_REQUEST' | 'INVALID_RID' | 'OWNER_ALREADY_EXISTS'
-});
-```
-
-##### 2. 방 설정 변경 (방장만 가능)
-
-```typescript
-// Client -> Server
-socket.emit('room:config:set', {
-  roomId: string,
-  winnersCount: number,              // 승자 수
-  winSentiment: 'POSITIVE' | 'NEGATIVE', // 승리 감정
-});
-
-// Server -> All Clients in Room
-socket.on('room:config', (config) => {
-  roomId: string,
-  winnersCount: number,
-  winSentiment: 'POSITIVE' | 'NEGATIVE',
-  updatedAt: number
-});
-```
-
-##### 3. 룰렛 스핀 요청 (방장만 가능)
-
-```typescript
-// Client -> Server
+// 스핀 요청 (방장, 전원 준비 후)
 socket.emit('spin:request', {
   roomId: string,
-  requestId: string  // 중복 요청 방지용 고유 ID (UUID 권장)
+  requestId: string,  // UUID 권장 (멱등성 보장)
 });
 
-// Server -> All Clients in Room
-socket.on('spin:resolved', (data) => {
-  roomId: string,
-  requestId: string,
-  spinId: string,
-  winnersCount: number,
-  winSentiment: 'POSITIVE' | 'NEGATIVE',
-  decidedAt: number,
-  animation: {
-    revealAt: number,    // 결과 공개 시각
-    durationMs: number   // 애니메이션 길이
-  }
-});
-
-// Server -> Each Client (개별 결과)
-socket.on('spin:outcome', (data) => {
-  roomId: string,
-  spinId: string,
-  outcome: 'WIN' | 'LOSE',
-  winSentiment: 'POSITIVE' | 'NEGATIVE'
-});
-
-// Server -> All Clients in Room (전체 결과, 닉네임 포함)
-socket.on('spin:result', (data) => {
-  roomId: string,
-  spinId: string,
-  outcomes: [
-    { nickname: string, outcome: 'WIN' | 'LOSE' },
-    ...
-  ]
+// 스핀 결과 수신
+socket.on('spin:outcome', ({ outcome }) => {
+  // outcome: 'WIN' | 'LOSE'
 });
 ```
 
-## 🏗️ 프로젝트 구조
+전체 이벤트 페이로드: [`src/modules/roulette/roulette-spec.md`](src/modules/roulette/roulette-spec.md)
 
-```
-src/
-├── main.ts                 # 애플리케이션 진입점
-├── app.module.ts          # 루트 모듈
-├── common/                # 공통 모듈
-│   └── redis/            # Redis 서비스
-│       ├── redis.module.ts
-│       ├── redis.service.ts
-│       └── redis-spec.md          # Redis 명세
-└── modules/              # 기능 모듈
-    └── roulette/        # 룰렛 게임
-        ├── roulette.controller.ts # HTTP API (방 생성)
-        ├── roulette.gateway.ts    # WebSocket 게이트웨이
-        ├── roulette.service.ts    # 비즈니스 로직
-        ├── roulette.module.ts
-        ├── roulette-spec.md       # 룰렛 명세
-        └── dto/                   # 데이터 전송 객체
-            ├── create-room-response.dto.ts
-            ├── room-join.dto.ts
-            ├── room-config-set.dto.ts
-            └── spin-request.dto.ts
-```
+Swagger UI: `http://localhost:8080/api` (로컬 실행 시)
 
-## 🔧 개발 도구
+---
 
-### 코드 포맷팅
+## 로컬 개발 환경
+
+### 사전 요구사항
+
+- Node.js 22+
+- pnpm 9+
+- Docker
+
+### 설치 및 실행
 
 ```bash
-pnpm run format
+# 의존성 설치
+pnpm install
+
+# Redis 실행 (Docker)
+pnpm run docker:up
+
+# 개발 서버 (watch 모드)
+pnpm run dev
 ```
 
-### 린팅
+### 환경 변수
 
 ```bash
-pnpm run lint
+# .env
+PORT=8080
+NODE_ENV=development
+CORS_ORIGIN=http://localhost:3000
+REDIS_URL=redis://localhost:6379
+FRONTEND_URL=http://localhost:3000   # Swagger WebSocket URL 표시용
 ```
 
 ### 테스트
 
 ```bash
-# 단위 테스트
-pnpm run test
-
-# 단위 테스트 (watch 모드)
-pnpm run test:watch
-
-# e2e 테스트
-pnpm run test:e2e
-
-# 테스트 커버리지
-pnpm run test:cov
+pnpm run test        # 단위 테스트
+pnpm run test:watch  # watch 모드
+pnpm run test:cov    # 커버리지
+pnpm run test:e2e    # e2e 테스트
 ```
-
-## 🔒 보안 고려사항
-
-- **방장 인증**: 토큰 기반 방장 권한 검증
-- **CORS 설정**: 프로덕션에서는 `CORS_ORIGIN`을 특정 도메인으로 제한
-- **토큰 관리**: 방장 토큰은 URL 쿼리 파라미터로 전달 (프론트엔드에서 관리)
-- **rid 관리**: WebSocket 연결마다 고유 rid 생성 (방 내에서만 유효)
-
-## 🐳 Docker
-
-### 사용 중인 컨테이너
-
-- **Redis**: `redis:7-alpine`
-- **포트**: 6379
-- **볼륨**: `redis_data` (데이터 영속성)
-- **설정**: AOF (Append Only File) 활성화
-- **헬스체크**: `redis-cli ping` (5초 간격)
-
-### Docker 명령어
-
-```bash
-# 컨테이너 시작
-docker compose up -d
-
-# 컨테이너 중지 및 제거
-docker compose down
-
-# 컨테이너 및 볼륨 모두 제거
-docker compose down -v
-
-# 실시간 로그 확인
-docker compose logs -f redis
-
-# 컨테이너 상태 확인
-docker compose ps
-```
-
-## 📦 배포
-
-프로덕션 배포 시 고려사항:
-
-1. **환경 변수 설정**
-   - `NODE_ENV=production`
-   - `SESSION_SECRET`을 강력한 랜덤 값으로 설정
-   - `CORS_ORIGIN`을 실제 프론트엔드 도메인으로 설정
-   - `REDIS_URL`을 프로덕션 Redis 인스턴스로 설정
-
-2. **Redis 설정**
-   - 프로덕션용 Redis 서버 구성 (AWS ElastiCache, Redis Cloud 등)
-   - Redis 비밀번호 설정
-   - 적절한 메모리 제한 및 eviction 정책 설정
-
-3. **애플리케이션 실행**
-
-   ```bash
-   pnpm run build
-   pnpm run start:prod
-   ```
-
-4. **프로세스 관리**
-   - PM2 또는 Docker를 사용한 프로세스 관리 권장
-   - 무중단 배포를 위한 로드 밸런서 구성
-
-## 📚 문서
-
-프로젝트의 상세한 명세는 다음 문서를 참고하세요:
-
-- [Roulette 모듈 명세](src/modules/roulette/roulette-spec.md) - 룰렛 게임 로직 및 API 명세
-- [Redis 모듈 명세](src/common/redis/redis-spec.md) - Redis 데이터 구조 및 메서드
-- [프론트엔드 개발 계획](front-dev-plan.md) - 프론트엔드 개발 가이드
-
-## 🤝 기여하기
-
-이슈와 풀 리퀘스트를 환영합니다!
-
-## 📄 라이선스
-
-UNLICENSED
 
 ---
 
-## 📚 부록: Docker 이미지 안전성 검증
+## 프로덕션 배포
 
-### 사용 중인 Docker 이미지
+Docker Compose로 App + Redis + Nginx를 단일 EC2에서 운영합니다.
 
-#### Redis 7 Alpine
+### 배포 파일 구조
 
-```yaml
-image: redis:7-alpine
+```
+docker-compose.prod.yml    # 프로덕션 서비스 정의
+nginx/
+  nginx.conf               # Nginx 메인 설정 (WebSocket upgrade map 포함)
+  conf.d/app.conf          # HTTP→HTTPS 리다이렉트, 리버스 프록시
+scripts/
+  setup-ec2.sh             # EC2 초기 환경 셋업 (Docker, certbot, ufw)
+  deploy.sh                # 배포 (pull → build → up → healthcheck)
+  init-ssl.sh              # Let's Encrypt 인증서 발급 + Nginx SSL 설정
 ```
 
-**이미지 정보:**
+### EC2 최초 셋업
 
-- **공식 이미지**: Docker Hub의 공식(Official) Redis 이미지
-- **버전**: Redis 7.x (최신 안정 버전)
-- **베이스 이미지**: Alpine Linux (경량화된 보안 강화 리눅스 배포판)
+**Step 1 — EC2 접속 후 환경 구성 (레포 클론 전, 최초 1회)**
 
-**안전성 검증:**
+`setup-ec2.sh`는 레포 없이 curl로 바로 실행할 수 있습니다.
 
-1. **공식 이미지 보증**
-   - Redis 공식 팀에서 관리하는 인증된 이미지
-   - Docker Hub Official Images 프로그램을 통해 검증됨
-   - 정기적인 보안 업데이트 및 패치 제공
+```bash
+# YOUR_REPO를 실제 GitHub 경로로 교체
+curl -fsSL https://raw.githubusercontent.com/YOUR_REPO/deploy-low-cost/scripts/setup-ec2.sh | bash
 
-2. **Alpine Linux 기반의 보안 장점**
-   - 최소한의 패키지만 포함 (공격 표면 최소화)
-   - musl libc 사용으로 메모리 안정성 향상
-   - 이미지 크기 약 30MB (일반 Debian 기반 대비 1/10 수준)
-   - 취약점 노출 가능성 최소화
-
-3. **버전 고정의 중요성**
-   - `redis:7-alpine` 사용으로 메이저 버전 고정
-   - 예기치 않은 breaking changes 방지
-   - 재현 가능한 빌드 환경 보장
-
-4. **보안 검증 방법**
-
-   ```bash
-   # Docker Hub에서 이미지 정보 확인
-   docker pull redis:7-alpine
-
-   # 취약점 스캔 (Docker Scout)
-   docker scout cves redis:7-alpine
-
-   # 이미지 레이어 및 히스토리 확인
-   docker history redis:7-alpine
-   ```
-
-5. **대안 고려사항**
-   - **특정 버전 고정**: `redis:7.4.7-alpine` (더 엄격한 버전 관리)
-   - **SHA256 해시**: `redis@sha256:...` (불변성 보장)
-   - **프라이빗 레지스트리**: 조직 내부 이미지 저장소 사용
-
-**권장 사항:**
-
-✅ **현재 설정 (개발 환경)**
-
-- `redis:7-alpine`은 개발 및 테스트 환경에 적합
-- 최신 보안 패치가 자동으로 적용되는 장점
-
-✅ **프로덕션 환경 권장**
-
-```yaml
-# 프로덕션용 docker-compose.yml
-services:
-  redis:
-    image: redis:7.4.7-alpine  # 특정 버전 고정
-    # 또는
-    image: redis:7-alpine@sha256:specific-hash  # SHA 고정
+# Docker 그룹 적용을 위해 새 세션으로 재접속
+exec su - $USER
 ```
 
-**참고 링크:**
+**Step 2 — 레포 클론**
 
-- [Redis 공식 Docker Hub](https://hub.docker.com/_/redis)
-- [Alpine Linux 공식 사이트](https://alpinelinux.org/)
-- [Docker Official Images 프로그램](https://docs.docker.com/trusted-content/official-images/)
+```bash
+git clone https://github.com/YOUR_REPO/rullette-together.git
+cd rullette-together
+git checkout deploy-low-cost
+```
 
-**마지막 확인 날짜**: 2026년 1월 8일
+**Step 3 — 환경 변수 설정**
+
+```bash
+cp .env.example .env.prod
+vim .env.prod    # CORS_ORIGIN, REDIS_PASSWORD, FRONTEND_URL 입력
+
+# Redis 비밀번호 생성 참고
+openssl rand -base64 32
+```
+
+**Step 4 — 서비스 배포**
+
+```bash
+bash scripts/deploy.sh
+```
+
+**Step 5 — SSL 발급 (도메인 A레코드가 EC2 IP를 가리켜야 함)**
+
+```bash
+bash scripts/init-ssl.sh api.your-domain.com admin@your-domain.com
+```
+
+### 이후 배포
+
+```bash
+bash scripts/deploy.sh
+# 또는
+pnpm run prod:build
+```
+
+### 환경 변수 (.env.prod)
+
+```bash
+PORT=8080
+NODE_ENV=production
+CORS_ORIGIN=https://your-frontend.com
+REDIS_PASSWORD=생성한_랜덤_비밀번호   # openssl rand -base64 32
+REDIS_URL=redis://redis:6379         # 서비스명 고정, 비밀번호는 REDIS_PASSWORD 로 별도 주입
+FRONTEND_URL=https://your-frontend.com
+NODE_MAX_OLD_SPACE=1200              # t4g.small 기준 (MB)
+```
+
+### 보안 설정
+
+- Redis는 Docker 내부 네트워크에서만 접근 가능 (`--bind 127.0.0.1`, 포트 미노출)
+- Nginx만 80/443 포트 개방, 앱 포트(8080) 외부 차단
+- 방장 토큰은 HTTP-only + Secure + SameSite=Lax 쿠키
+
+### 프로덕션 체크리스트
+
+- [ ] `NODE_ENV=production`
+- [ ] `CORS_ORIGIN` 실제 프론트엔드 도메인
+- [ ] `REDIS_URL` 확인 (Compose 내부: `redis://redis:6379`)
+- [ ] SSL 인증서 발급 완료 (`bash scripts/init-ssl.sh`)
+- [ ] Redis AOF 영속성 활성화 확인 (`--appendonly yes`)
+- [ ] EBS 스냅샷 자동화 설정 (AWS 콘솔 Data Lifecycle Manager)
+- [ ] `/health/ready` 헬스체크 응답 확인
+
+---
+
+## 모니터링
+
+### 헬스체크 엔드포인트
+
+| 엔드포인트 | 확인 항목 |
+|-----------|-----------|
+| `GET /health` | Redis 연결 + 메모리 힙 (150MB 임계값) |
+| `GET /health/live` | 프로세스 생존 여부 |
+| `GET /health/ready` | Redis 연결 가능 여부 |
+
+### Prometheus 메트릭 (`GET /metrics`)
+
+| 메트릭 | 설명 |
+|--------|------|
+| `http_requests_total` | HTTP 요청 수 (method, route, status) |
+| `http_request_duration_seconds` | 요청 처리 시간 히스토그램 |
+| `websocket_connections_active` | 활성 WebSocket 연결 수 |
+| `websocket_events_total` | WebSocket 이벤트 처리 수 |
+| `active_rooms_total` | 활성 방 수 |
+| `spins_total` | 총 스핀 횟수 |
+
+---
+
+## 문서
+
+- [Roulette 모듈 명세](src/modules/roulette/roulette-spec.md)
+- [Redis 키·TTL 명세](src/common/redis/redis-spec.md)
+- [에러 코드 목록](docs/api/ERROR_RESPONSES.md)

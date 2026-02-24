@@ -82,9 +82,11 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Docker
 docker-compose.override.yml
 docker-compose.local.yml
-docker-compose.prod.yml
 docker-compose.production.yml
 .docker/
+
+# Nginx - SSL 적용 후 도메인이 기록되는 파일 (init-ssl.sh 이 생성)
+nginx/conf.d/app.conf
 
 # Debug and profiling
 *.heapsnapshot
