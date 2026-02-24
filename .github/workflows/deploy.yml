@@ -4,8 +4,9 @@
 name: Deploy to EC2
 
 on:
-  push:
-    branches: [deploy-low-cost]
+  # push:
+  #   branches: [deploy-low-cost]
+  workflow_dispatch:
 
 jobs:
   deploy:
