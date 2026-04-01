@@ -36,12 +36,20 @@ export class EnvironmentVariables {
 
   @Transform(({ value }: { value: unknown }) => {
     if (typeof value === 'string') {
-      // JSON 배열 형태 또는 단일 문자열 처리
+      // JSON 배열, 콤마 구분 문자열, 단일 문자열 모두 허용
       try {
         const parsed: unknown = JSON.parse(value);
-        return Array.isArray(parsed) ? (parsed as string[]) : [value];
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((item) => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter((item) => item.length > 0);
+        }
       } catch {
-        return [value];
+        return value
+          .split(',')
+          .map((origin) => origin.trim())
+          .filter((origin) => origin.length > 0);
       }
     }
     return value as string[];
@@ -55,20 +63,21 @@ export class EnvironmentVariables {
   @IsOptional()
   FRONTEND_URL: string = 'http://localhost:3000';
 
-  // Redis TLS/AUTH settings for ElastiCache
-  @IsString()
-  @IsOptional()
-  REDIS_PASSWORD?: string;
-
   @Transform(({ value }: { value: unknown }) => {
-    if (typeof value === 'string') {
-      return value === 'true' || value === '1';
+    if (typeof value === 'boolean') {
+      return value;
     }
-    return Boolean(value);
+
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      return ['1', 'true', 'yes', 'on'].includes(normalized);
+    }
+
+    return true;
   })
   @IsBoolean()
   @IsOptional()
-  REDIS_TLS: boolean = false;
+  TRUST_PROXY: boolean = true;
 }
 
 export function validate(

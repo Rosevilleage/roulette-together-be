@@ -38,8 +38,9 @@ async function bootstrap(): Promise<void> {
 
   const configService = app.get(ConfigService);
 
-  // Trust proxy for correct client IP behind Vercel/Cloudflare/Nginx
-  app.set('trust proxy', true);
+  // Trust reverse proxy for secure cookies and client IP handling
+  const trustProxy = configService.get<boolean>('TRUST_PROXY') ?? true;
+  app.set('trust proxy', trustProxy);
 
   app.use(cookieParser());
   app.enableVersioning({

@@ -27,12 +27,7 @@ import { RedisService } from '../../common/redis/redis.service';
 import { RouletteService } from './roulette.service';
 
 @WebSocketGateway({
-  transports: ['websocket', 'polling'],
-  path: '/socket.io/',
-  pingInterval: 25000,
-  pingTimeout: 60000,
-  allowUpgrades: true,
-  perMessageDeflate: false, // ALB compatibility
+  path: '/socket.io',
 })
 @UseFilters(new WsAllExceptionsFilter())
 @UseGuards(WsThrottlerGuard)
