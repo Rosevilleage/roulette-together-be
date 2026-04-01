@@ -1,7 +1,6 @@
 import { plainToInstance, Transform } from 'class-transformer';
 import {
   IsArray,
-  IsBoolean,
   IsEnum,
   IsNumber,
   IsOptional,
@@ -36,20 +35,12 @@ export class EnvironmentVariables {
 
   @Transform(({ value }: { value: unknown }) => {
     if (typeof value === 'string') {
-      // JSON 배열, 콤마 구분 문자열, 단일 문자열 모두 허용
+      // JSON 배열 형태 또는 단일 문자열 처리
       try {
         const parsed: unknown = JSON.parse(value);
-        if (Array.isArray(parsed)) {
-          return parsed
-            .filter((item) => typeof item === 'string')
-            .map((item) => item.trim())
-            .filter((item) => item.length > 0);
-        }
+        return Array.isArray(parsed) ? (parsed as string[]) : [value];
       } catch {
-        return value
-          .split(',')
-          .map((origin) => origin.trim())
-          .filter((origin) => origin.length > 0);
+        return [value];
       }
     }
     return value as string[];
@@ -62,22 +53,6 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   FRONTEND_URL: string = 'http://localhost:3000';
-
-  @Transform(({ value }: { value: unknown }) => {
-    if (typeof value === 'boolean') {
-      return value;
-    }
-
-    if (typeof value === 'string') {
-      const normalized = value.trim().toLowerCase();
-      return ['1', 'true', 'yes', 'on'].includes(normalized);
-    }
-
-    return true;
-  })
-  @IsBoolean()
-  @IsOptional()
-  TRUST_PROXY: boolean = true;
 }
 
 export function validate(

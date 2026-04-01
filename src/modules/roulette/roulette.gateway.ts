@@ -26,9 +26,7 @@ import type { RoomDeleteDto } from './dto/room-delete.dto';
 import { RedisService } from '../../common/redis/redis.service';
 import { RouletteService } from './roulette.service';
 
-@WebSocketGateway({
-  path: '/socket.io',
-})
+@WebSocketGateway()
 @UseFilters(new WsAllExceptionsFilter())
 @UseGuards(WsThrottlerGuard)
 export class RouletteGateway
