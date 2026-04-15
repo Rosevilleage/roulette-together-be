@@ -6,10 +6,8 @@ export function setupSwagger(
   app: INestApplication,
   configService: ConfigService,
 ): void {
-  const frontendUrl =
-    configService.get<string>('FRONTEND_URL') ?? 'http://localhost:3000';
-  const wsProtocol = frontendUrl.startsWith('https') ? 'wss' : 'ws';
-  const wsUrl = frontendUrl.replace(/^https?/, wsProtocol);
+  const wsUrl =
+    configService.get<string>('PUBLIC_WS_URL') ?? 'ws://localhost:8080';
 
   const config = new DocumentBuilder()
     .setTitle('🎰 Rullette Together API')

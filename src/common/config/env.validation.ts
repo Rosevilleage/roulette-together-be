@@ -56,6 +56,10 @@ export class EnvironmentVariables {
 
   @IsString()
   @IsOptional()
+  PUBLIC_WS_URL: string = 'ws://localhost:8080';
+
+  @IsString()
+  @IsOptional()
   COOKIE_DOMAIN?: string;
 }
 
