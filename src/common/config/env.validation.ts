@@ -53,6 +53,10 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   FRONTEND_URL: string = 'http://localhost:3000';
+
+  @IsString()
+  @IsOptional()
+  COOKIE_DOMAIN?: string;
 }
 
 export function validate(

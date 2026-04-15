@@ -2,7 +2,7 @@ import { Controller, Logger, Post, Body, Res, Get, Req } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import type { Response, Request } from 'express';
+import type { Response, Request, CookieOptions } from 'express';
 import { randomBytes } from 'crypto';
 import { RedisService, SocketInfo } from '../../common/redis/redis.service';
 import { CreateRoomDto } from './dto/create-room.dto';
@@ -25,12 +25,15 @@ const ROOM_ID_PATTERN = /^room-[a-f0-9]{16}$/;
 export class RouletteController {
   private readonly logger = new Logger(RouletteController.name);
   private readonly isProduction: boolean;
+  private readonly cookieDomain?: string;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly redisService: RedisService,
   ) {
     this.isProduction = this.configService.get('NODE_ENV') === 'production';
+    const rawCookieDomain = this.configService.get<string>('COOKIE_DOMAIN');
+    this.cookieDomain = rawCookieDomain?.trim() || undefined;
   }
 
   @Post()
@@ -86,23 +89,19 @@ export class RouletteController {
       // Set owner token in secure HTTP-only cookie with roomId
       // Cookie expires in 2 hours (same as Redis TTL)
       const cookieValue = JSON.stringify({ roomId, token: ownerToken });
-      res.cookie(`owner_token_${roomId}`, cookieValue, {
-        httpOnly: true, // Prevents XSS attacks
-        secure: this.isProduction, // HTTPS only in production
-        sameSite: 'lax', // CSRF protection
-        maxAge: 2 * 60 * 60 * 1000, // 2 hours in milliseconds
-        path: '/', // Cookie available for all paths
-      });
+      res.cookie(
+        `owner_token_${roomId}`,
+        cookieValue,
+        this.buildCookieOptions(2 * 60 * 60 * 1000),
+      );
 
       // Set owner rid cookie for reconnection verification
       // This ensures only the same browser can reconnect as owner
-      res.cookie(`rid_${roomId}`, ownerRid, {
-        httpOnly: true,
-        secure: this.isProduction,
-        sameSite: 'lax',
-        maxAge: 2 * 60 * 60 * 1000,
-        path: '/',
-      });
+      res.cookie(
+        `rid_${roomId}`,
+        ownerRid,
+        this.buildCookieOptions(2 * 60 * 60 * 1000),
+      );
 
       return {
         roomId,
@@ -184,7 +183,7 @@ export class RouletteController {
       const config = configs.get(roomId);
 
       if (!storedToken || storedToken !== ownerTokens[roomId] || !config) {
-        res.clearCookie(`owner_token_${roomId}`, { path: '/' });
+        res.clearCookie(`owner_token_${roomId}`, this.buildCookieOptions());
         return false;
       }
       return true;
@@ -251,5 +250,24 @@ export class RouletteController {
     }
 
     return { ownerNickname, participantCount };
+  }
+
+  private buildCookieOptions(maxAge?: number): CookieOptions {
+    const cookieOptions: CookieOptions = {
+      httpOnly: true,
+      secure: this.isProduction,
+      sameSite: 'lax',
+      path: '/',
+    };
+
+    if (typeof maxAge === 'number') {
+      cookieOptions.maxAge = maxAge;
+    }
+
+    if (this.cookieDomain) {
+      cookieOptions.domain = this.cookieDomain;
+    }
+
+    return cookieOptions;
   }
 }

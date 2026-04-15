@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { RouletteController } from './roulette.controller';
 import { RedisService } from '../../common/redis/redis.service';
 import {
@@ -14,6 +15,7 @@ import { WinSentiment } from './dto/room-config-set.dto';
 describe('RouletteController', () => {
   let controller: RouletteController;
   let mockRedisService: jest.Mocked<RedisService>;
+  let mockConfigService: { get: jest.Mock };
 
   const createMockResponse = (): Partial<Response> => ({
     cookie: jest.fn(),
@@ -28,10 +30,22 @@ describe('RouletteController', () => {
 
   beforeEach(async () => {
     mockRedisService = createMockRedisService();
+    mockConfigService = {
+      get: jest.fn((key: string) => {
+        if (key === 'NODE_ENV') {
+          return 'test';
+        }
+        return undefined;
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [RouletteController],
       providers: [
+        {
+          provide: ConfigService,
+          useValue: mockConfigService,
+        },
         {
           provide: RedisService,
           useValue: mockRedisService,
@@ -252,7 +266,7 @@ describe('RouletteController', () => {
       expect(result.rooms).toHaveLength(0);
       expect(mockRes.clearCookie).toHaveBeenCalledWith(
         `owner_token_${roomId}`,
-        { path: '/' },
+        expect.objectContaining({ path: '/' }),
       );
     });
 
@@ -281,7 +295,7 @@ describe('RouletteController', () => {
       expect(result.rooms).toHaveLength(0);
       expect(mockRes.clearCookie).toHaveBeenCalledWith(
         `owner_token_${roomId}`,
-        { path: '/' },
+        expect.objectContaining({ path: '/' }),
       );
     });
 
