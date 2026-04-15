@@ -50,6 +50,7 @@ server {
 #   }
 #
 #   location / {
+#     limit_req          zone=api_limit burst=30 nodelay;
 #     proxy_pass         http://app_backend;
 #     proxy_http_version 1.1;
 #     proxy_set_header   Host $host;
@@ -76,6 +77,7 @@ server {
 #   ssl_stapling_verify on;
 #
 #   location / {
+#     limit_req          zone=ws_limit burst=10 nodelay;
 #     proxy_pass         http://app_backend;
 #     proxy_http_version 1.1;
 #     proxy_set_header   Upgrade $http_upgrade;
